@@ -38,10 +38,14 @@ done
 cat "$report"
 echo "critical=$critical high=$high"
 
+# A rebuild is tried once per set of critical findings: the release notes carry the set's fingerprint.
+# If the rebuild did not fix them (the fix is not yet in a package we install), an issue follows instead.
 if [ "${CI:-}" = true ]; then
-  if [ "$critical" -gt 0 ]; then
-    "$ROOT/ci/forge.sh" rebuild "security rebuild: $critical critical findings with a fix"
-  elif [ "$high" -gt 0 ]; then
-    "$ROOT/ci/forge.sh" issue "High-severity vulnerabilities with a fix in the published images" "$report"
+  fingerprint=$(jq -r '.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL") | "\(.VulnerabilityID) \(.PkgName)"' \
+    "$OUT"/scan-*.json | sort -u | sha256sum | cut -c1-12)
+  if [ "$critical" -gt 0 ] && ! "$ROOT/ci/forge.sh" latest-notes | grep -q "findings $fingerprint"; then
+    "$ROOT/ci/forge.sh" rebuild "security rebuild for $critical critical findings with a fix (findings $fingerprint)"
+  elif [ "$critical" -gt 0 ] || [ "$high" -gt 0 ]; then
+    "$ROOT/ci/forge.sh" issue "Vulnerabilities with a fix in the published images" "$report"
   fi
 fi

@@ -3,6 +3,7 @@
 #   forge.sh release <tag> <title> <notes-file>
 #   forge.sh issue <title> <body-file>     (skipped when an open issue has the same title)
 #   forge.sh rebuild <reason>              (starts the release workflow)
+#   forge.sh latest-notes                  (prints the latest release's notes)
 set -euo pipefail
 
 case "${1:-}" in
@@ -19,8 +20,11 @@ case "${1:-}" in
   rebuild)
     gh workflow run release.yml -f reason="$2"
     ;;
+  latest-notes)
+    gh release view --json body --jq .body 2>/dev/null || true
+    ;;
   *)
-    echo "usage: forge.sh release|issue|rebuild ..." >&2
+    echo "usage: forge.sh release|issue|rebuild|latest-notes ..." >&2
     exit 2
     ;;
 esac

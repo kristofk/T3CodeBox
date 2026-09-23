@@ -21,7 +21,9 @@ LABEL org.opencontainers.image.title="T3CodeBox" \
 
 # Base tools, and gh from GitHub's apt repository (T3 refuses gh older than 2.81).
 RUN export DEBIAN_FRONTEND=noninteractive \
+ && echo force-unsafe-io > /etc/dpkg/dpkg.cfg.d/docker-unsafe-io \
  && apt-get update \
+ && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl git openssh-client jq ripgrep procps less tzdata \
       python3 make libnss-wrapper tini xz-utils libatomic1 \

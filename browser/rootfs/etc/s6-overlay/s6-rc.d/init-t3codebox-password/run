@@ -1,6 +1,7 @@
 #!/usr/bin/with-contenv bash
 # shellcheck shell=bash
 # Without PASSWORD, generate one on first start, keep it in the volume and print it once.
+# Also writes the remote desktop's session token for nginx.
 file=/config/.t3codebox-password
 if [ -z "${PASSWORD:-}" ]; then
   if [ ! -s "$file" ]; then
@@ -12,3 +13,16 @@ if [ -z "${PASSWORD:-}" ]; then
   fi
   printf '%s' "$(cat "$file")" > /run/s6/container_environment/PASSWORD
 fi
+
+# Session token for the remote desktop's cookie (see the Dockerfile); new on every start.
+token=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 40)
+cat > /etc/nginx/conf.d/t3codebox-session.conf <<EOF
+map \$cookie_t3codebox_session \$t3codebox_auth {
+  "$token" off;
+  default "Login";
+}
+map \$host \$t3codebox_session {
+  default "$token";
+}
+EOF
+chmod 600 /etc/nginx/conf.d/t3codebox-session.conf

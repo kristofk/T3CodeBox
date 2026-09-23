@@ -78,6 +78,8 @@ check "browser generated and stored a password" bash -c \
   "for i in \$(seq 30); do $DOCKER exec $b test -s /config/.t3codebox-password && exit 0; sleep 2; done; exit 1"
 check "browser remote desktop requires the password" bash -c \
   "$DOCKER exec $b sh -c '[ \"\$(curl -s -o /dev/null -w %{http_code} http://127.0.0.1:3000/)\" = 401 ] && [ \"\$(curl -s -o /dev/null -w %{http_code} -u abc:\$(cat /config/.t3codebox-password) http://127.0.0.1:3000/)\" = 200 ]'"
+check "a password login's cookie opens the desktop stream (Safari sends no basic auth on WebSockets)" bash -c \
+  "$DOCKER exec $b sh -c 'c=\$(curl -s -o /dev/null -D - -u abc:\$(cat /config/.t3codebox-password) http://127.0.0.1:3000/ | grep -o \"t3codebox_session=[A-Za-z0-9]*\") && [ \"\$(curl -s -o /dev/null -w %{http_code} http://127.0.0.1:3000/websocket)\" = 401 ] && [ \"\$(curl -s -o /dev/null -w %{http_code} -H \"Cookie: \$c\" http://127.0.0.1:3000/websocket)\" != 401 ]'"
 check "no zombie processes" bash -c "! $DOCKER exec $c ps -eo stat | grep -q '^Z'"
 check "browser MCP server registered for the agents" in_t3 bash -c \
   'for i in $(seq 45); do jq -e .mcpServers.browser ~/.claude.json && jq -e .mcpServers.browser ~/.cursor/mcp.json && jq -e .mcp.browser ~/.config/opencode/opencode.json && grep -q "^\[mcp_servers.browser\]" ~/.codex/config.toml && grep -q "^\[mcp_servers.browser\]" ~/.grok/config.toml && exit 0; sleep 1; done; exit 1'

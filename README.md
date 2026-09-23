@@ -109,6 +109,8 @@ docker exec t3codebox bash -c 'for d in /workspace/*/.git; do t3 project add "${
 
 Open `https://<host>.<tailnet>.ts.net:3774` (or your proxy URL), sign in as `abc` with the browser password, and you see the Chromium the agents drive. It works from a phone. Sign in to sites there when an agent needs an account.
 
+After the password prompt, a session cookie keeps you signed in (Safari sends no password on the desktop's WebSocket stream, so the cookie carries it). The cookie stops working when the browser container restarts; you are then asked for the password again.
+
 **Caution:** an agent driving a signed-in browser acts on whatever a web page tells it (prompt injection). Sign in only to accounts the agents may touch.
 
 - Set your own password: `BROWSER_PASSWORD` in `.env`. The generated one is kept in `/config/.t3codebox-password` in the browser volume: `docker exec t3codebox-browser cat /config/.t3codebox-password`.
@@ -116,7 +118,7 @@ Open `https://<host>.<tailnet>.ts.net:3774` (or your proxy URL), sign in as `abc
 - No browser at all: delete the `COMPOSE_PROFILES=browser` line from `.env`, then `docker compose up -d --remove-orphans`.
 - More Chromium flags or desktop settings: every [linuxserver/chromium](https://docs.linuxserver.io/images/docker-chromium/) variable works (for example `CHROME_CLI`), set in the `browser` service.
 
-On start, T3CodeBox adds a `browser` MCP server to each agent's user config (`~/.claude.json`, `~/.codex/config.toml`, `~/.config/opencode/opencode.json`, `~/.cursor/mcp.json`) when it is missing. It never changes an entry you made; delete or rename the entry to use your own.
+On start, T3CodeBox adds a `browser` MCP server to each agent's user config (`~/.claude.json`, `~/.codex/config.toml`, `~/.config/opencode/opencode.json`, `~/.cursor/mcp.json`, `~/.grok/config.toml`) when it is missing. It never changes an entry you made; delete or rename the entry to use your own.
 
 ## Settings
 
