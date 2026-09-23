@@ -26,7 +26,7 @@ RUN export DEBIAN_FRONTEND=noninteractive \
 # DevTools needs a non-default profile directory (Chrome 136+) and listens on loopback only (Chrome 113+).
 # The flags go last, after the wrapper's bare --user-data-dir, so they win; CHROME_CLI stays free for the user.
 RUN sed -i \
-      -e 's|^\( *\)"\$@" > /dev/null 2>&1$|\1"$@" --user-data-dir=/config/profile --remote-debugging-port=9222 > /dev/null 2>\&1|' \
+      -e 's|^\( *\)"\$@" > /dev/null 2>&1$|\1"$@" --user-data-dir=/config/profile --remote-debugging-port=9222 --hide-crash-restore-bubble > /dev/null 2>\&1|' \
       -e 's|rm -f \$HOME/.config/chromium/Singleton\*|rm -f $HOME/.config/chromium/Singleton* /config/profile/Singleton*|' \
       /usr/bin/wrapped-chromium \
  && grep -q -- '--remote-debugging-port=9222' /usr/bin/wrapped-chromium \
