@@ -1,5 +1,12 @@
 # T3CodeBox
 
+[![Release build](https://github.com/kristofk/T3CodeBox/actions/workflows/release.yml/badge.svg)](https://github.com/kristofk/T3CodeBox/actions/workflows/release.yml)
+[![Security scan](https://github.com/kristofk/T3CodeBox/actions/workflows/scan.yml/badge.svg)](https://github.com/kristofk/T3CodeBox/actions/workflows/scan.yml)
+[![Latest release](https://img.shields.io/github/v/release/kristofk/T3CodeBox?label=latest&sort=date)](https://github.com/kristofk/T3CodeBox/releases/latest)
+[![Released](https://img.shields.io/github/release-date/kristofk/T3CodeBox?label=released)](https://github.com/kristofk/T3CodeBox/releases/latest)
+[![T3 Code upstream](https://img.shields.io/github/v/release/pingdotgg/t3code?label=T3%20Code%20stable)](https://github.com/pingdotgg/t3code/releases/latest)
+[![Licence](https://img.shields.io/github/license/kristofk/T3CodeBox)](LICENSE)
+
 A container image for the [T3 Code](https://github.com/pingdotgg/t3code) server, the half of T3 Code that runs the coding agents, plus a browser the agents can drive and you can watch and control from any device, including your phone. Put it on a home server and connect from the T3 Code desktop app, the web app or your phone.
 
 Everything works without edits, and every default can be changed in the obvious place.
