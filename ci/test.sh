@@ -83,7 +83,7 @@ check "a password login's cookie opens the desktop stream (Safari sends no basic
 check "no zombie processes" bash -c "! $DOCKER exec $c ps -eo stat | grep -q '^Z'"
 check "browser MCP server registered for the agents" in_t3 bash -c \
   'for i in $(seq 45); do jq -e .mcpServers.browser ~/.claude.json && jq -e .mcpServers.browser ~/.cursor/mcp.json && jq -e .mcp.browser ~/.config/opencode/opencode.json && grep -q "^\[mcp_servers.browser\]" ~/.codex/config.toml && grep -q "^\[mcp_servers.browser\]" ~/.grok/config.toml && exit 0; sleep 1; done; exit 1'
-check "agent-side MCP connection drives the browser" bash -c \
-  "for i in \$(seq 30); do $DOCKER exec $b sh -c 'curl -fsS http://127.0.0.1:9222/json/version' >/dev/null 2>&1 && break; sleep 2; done; $DOCKER exec $c node -e \"\$(cat ci/mcp-probe.js)\""
+check "agent-side MCP connection drives the browser, leaving nothing in the project" bash -c \
+  "for i in \$(seq 30); do $DOCKER exec $b sh -c 'curl -fsS http://127.0.0.1:9222/json/version' >/dev/null 2>&1 && break; sleep 2; done; $DOCKER exec $c node -e \"\$(cat ci/mcp-probe.js)\" && $DOCKER exec $c test ! -e /workspace/.playwright-mcp"
 
 exit "$failed"
