@@ -2,17 +2,15 @@
 # Entrypoint of the t3codebox image: user setup, browser tool registration, then the command (`t3 serve`).
 set -euo pipefail
 
-# A uid set with compose `user:` has no passwd entry; give it one so ssh, git and the provider CLIs work.
-if ! getent passwd "$(id -u)" >/dev/null; then
-  export NSS_WRAPPER_PASSWD=/tmp/t3codebox-passwd NSS_WRAPPER_GROUP=/tmp/t3codebox-group
-  grep -v '^t3codebox:' /etc/passwd > "$NSS_WRAPPER_PASSWD"
-  echo "t3codebox:x:$(id -u):$(id -g):T3CodeBox:${HOME}:/bin/bash" >> "$NSS_WRAPPER_PASSWD"
-  cp /etc/group "$NSS_WRAPPER_GROUP"
-  if ! getent group "$(id -g)" >/dev/null; then
-    sed -i '/^t3codebox:/d' "$NSS_WRAPPER_GROUP"
-    echo "t3codebox:x:$(id -g):" >> "$NSS_WRAPPER_GROUP"
-  fi
-  export LD_PRELOAD=libnss_wrapper.so
+# The uid set with compose `user:` becomes the t3codebox user (name and home) for every process,
+# `docker exec` included: the image resolves users through nss_wrapper's files (see the Dockerfile).
+uid=$(id -u)
+gid=$(id -g)
+passwd=$(grep -v '^t3codebox:' /etc/passwd; echo "t3codebox:x:$uid:$gid:T3CodeBox:$HOME:/bin/bash")
+group=$(grep -v '^t3codebox:' /etc/group)
+grep -q "^[^:]*:[^:]*:$gid:" <<< "$group" || group+=$'\n'"t3codebox:x:$gid:"
+if ! { printf '%s\n' "$passwd" > "$NSS_WRAPPER_PASSWD" && printf '%s\n' "$group" > "$NSS_WRAPPER_GROUP"; } 2>/dev/null; then
+  echo "t3codebox: warning: could not write $NSS_WRAPPER_PASSWD; uid $uid may have no user name" >&2
 fi
 
 for dir in "$HOME" /workspace; do

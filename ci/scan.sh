@@ -5,7 +5,7 @@
 
 tag=${SCAN_TAG:-latest}
 trivy() {
-  if command -v trivy >/dev/null; then
+  if type -P trivy >/dev/null; then
     command trivy "$@"
   else
     # The registry login (for private images) comes along read-only.
@@ -20,7 +20,7 @@ high=0
 for image in "$IMAGE:$tag" "$BROWSER_IMAGE:$tag"; do
   name=$(basename "${image%:*}")
   out_dir=$OUT
-  command -v trivy >/dev/null || out_dir=/out
+  type -P trivy >/dev/null || out_dir=/out
   trivy image --quiet --ignore-unfixed --severity CRITICAL,HIGH --format json -o "$out_dir/scan-$name.json" "$image"
   c=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' "$OUT/scan-$name.json")
   h=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' "$OUT/scan-$name.json")

@@ -97,9 +97,14 @@ RUN git config --system credential.https://github.com.helper '' \
  && git config --system safe.directory '*' \
  && git config --system init.defaultBranch main
 
+# User lookups go through nss_wrapper's copies of passwd and group, which the entrypoint rewrites for
+# the uid the container runs as, so `docker exec` under a custom uid has a user name too.
 RUN groupadd --gid 1000 t3codebox \
  && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/t3codebox --shell /bin/bash t3codebox \
- && install -d -o 1000 -g 1000 /workspace
+ && install -d -o 1000 -g 1000 /workspace \
+ && install -d -m 755 /etc/t3codebox \
+ && install -m 666 /etc/passwd /etc/t3codebox/passwd \
+ && install -m 666 /etc/group /etc/t3codebox/group
 
 COPY rootfs/ /
 
@@ -109,7 +114,10 @@ ENV HOME=/home/t3codebox \
     T3CODE_HOST=0.0.0.0 \
     T3CODE_PORT=3773 \
     DISABLE_AUTOUPDATER=1 \
-    OPENCODE_DISABLE_AUTOUPDATE=1
+    OPENCODE_DISABLE_AUTOUPDATE=1 \
+    LD_PRELOAD=libnss_wrapper.so \
+    NSS_WRAPPER_PASSWD=/etc/t3codebox/passwd \
+    NSS_WRAPPER_GROUP=/etc/t3codebox/group
 
 USER 1000:1000
 WORKDIR /workspace

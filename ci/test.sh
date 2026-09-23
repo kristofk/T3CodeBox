@@ -71,7 +71,9 @@ check "pairing link minted with --base-url" bash -c \
 check "state survives a restart" bash -c \
   "$DOCKER restart $c >/dev/null && sleep 2 && for i in \$(seq 60); do $DOCKER exec $c t3 auth pairing list --json 2>/dev/null | grep -q t3codebox-test && exit 0; sleep 2; done; exit 1"
 check "no sudo and no Docker socket" in_t3 bash -c '! command -v sudo && [ ! -e /var/run/docker.sock ]'
-check "custom uid gets a user name" bash -c "[ \"\$($DOCKER run --rm --user 4242:4242 $LOCAL_IMAGE whoami)\" = t3codebox ]"
+check "custom uid has a user name, in docker exec too" bash -c \
+  "$DOCKER rm -f t3codebox-test-uid >/dev/null 2>&1; $DOCKER run -d --name t3codebox-test-uid --user 4242:4242 $LOCAL_IMAGE sleep infinity >/dev/null && sleep 2 \
+   && [ \"\$($DOCKER exec t3codebox-test-uid whoami)\" = t3codebox ] && $DOCKER exec t3codebox-test-uid ssh -G localhost >/dev/null; r=\$?; $DOCKER rm -f t3codebox-test-uid >/dev/null; exit \$r"
 check "browser generated and stored a password" bash -c \
   "for i in \$(seq 30); do $DOCKER exec $b test -s /config/.t3codebox-password && exit 0; sleep 2; done; exit 1"
 check "browser remote desktop requires the password" bash -c \
