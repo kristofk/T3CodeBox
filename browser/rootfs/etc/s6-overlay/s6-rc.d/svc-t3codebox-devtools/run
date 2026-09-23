@@ -1,0 +1,4 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+# Forward the private network's port 9223 to Chromium's loopback-only DevTools port 9222.
+exec s6-setuidgid abc socat TCP-LISTEN:9223,fork,reuseaddr TCP:127.0.0.1:9222

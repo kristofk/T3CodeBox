@@ -1,0 +1,16 @@
+# Overrides compose.yaml for ci/test.sh: own names, no host ports, so a test can run next to a live stack.
+name: t3codebox-test
+services:
+  t3codebox:
+    container_name: t3codebox-test
+    ports: !reset []
+  browser:
+    container_name: t3codebox-test-browser
+    ports: !reset []
+volumes:
+  home:
+    name: t3codebox-test-home
+  workspace:
+    name: t3codebox-test-workspace
+  browser:
+    name: t3codebox-test-browser

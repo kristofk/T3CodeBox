@@ -1,0 +1,14 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+# Without PASSWORD, generate one on first start, keep it in the volume and print it once.
+file=/config/.t3codebox-password
+if [ -z "${PASSWORD:-}" ]; then
+  if [ ! -s "$file" ]; then
+    tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24 > "$file"
+    chmod 600 "$file"
+    chown abc:abc "$file"
+    echo "**** T3CodeBox browser sign-in: user '${CUSTOM_USER:-abc}', password '$(cat "$file")' ****"
+    echo "**** Printed only this once. Later: docker exec t3codebox-browser cat $file ****"
+  fi
+  printf '%s' "$(cat "$file")" > /run/s6/container_environment/PASSWORD
+fi

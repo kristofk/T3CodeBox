@@ -1,0 +1,104 @@
+# Builds, tests and publishes a release when T3 Code publishes a stable release.
+# "Run workflow" rebuilds the current T3 Code version with every other component at its latest.
+name: release
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Reason for this build (shown in the release notes)
+        default: manual rebuild
+
+permissions:
+  contents: write
+  packages: write
+  issues: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ${{ vars.REGISTRY || format('ghcr.io/{0}', github.repository_owner) }}
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      t3_version: ${{ steps.upstream.outputs.t3_version }}
+      tag: ${{ steps.upstream.outputs.tag }}
+      build: ${{ steps.upstream.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+        run: make --no-print-directory upstream | tee -a "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      T3_VERSION: ${{ needs.check.outputs.t3_version }}
+      IMAGE_VERSION: ${{ needs.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: make build test publish
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-out-${{ matrix.runner }}
+          path: ci-out/
+
+  release:
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ci-out-*
+          merge-multiple: true
+          path: ci-out
+      - run: make release
+        env:
+          IMAGE_VERSION: ${{ needs.check.outputs.tag }}
+          REASON: ${{ github.event_name == 'workflow_dispatch' && inputs.reason || 'new T3 Code release' }}
+          GH_TOKEN: ${{ github.token }}
+
+  report-failure:
+    needs: [check, build, release]
+    if: failure()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          echo "The release workflow failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > body.md
+          ci/forge.sh issue "Release build failed" body.md
+        env:
+          GH_TOKEN: ${{ github.token }}

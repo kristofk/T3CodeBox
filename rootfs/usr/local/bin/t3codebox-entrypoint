@@ -1,0 +1,27 @@
+#!/bin/bash
+# Entrypoint of the t3codebox image: user setup, browser tool registration, then the command (`t3 serve`).
+set -euo pipefail
+
+# A uid set with compose `user:` has no passwd entry; give it one so ssh, git and the provider CLIs work.
+if ! getent passwd "$(id -u)" >/dev/null; then
+  export NSS_WRAPPER_PASSWD=/tmp/t3codebox-passwd NSS_WRAPPER_GROUP=/tmp/t3codebox-group
+  grep -v '^t3codebox:' /etc/passwd > "$NSS_WRAPPER_PASSWD"
+  echo "t3codebox:x:$(id -u):$(id -g):T3CodeBox:${HOME}:/bin/bash" >> "$NSS_WRAPPER_PASSWD"
+  cp /etc/group "$NSS_WRAPPER_GROUP"
+  if ! getent group "$(id -g)" >/dev/null; then
+    sed -i '/^t3codebox:/d' "$NSS_WRAPPER_GROUP"
+    echo "t3codebox:x:$(id -g):" >> "$NSS_WRAPPER_GROUP"
+  fi
+  export LD_PRELOAD=libnss_wrapper.so
+fi
+
+for dir in "$HOME" /workspace; do
+  if [ ! -w "$dir" ]; then
+    echo "t3codebox: warning: $dir is not writable by uid $(id -u); give the mounted folder to $(id -u):$(id -g)" >&2
+  fi
+done
+
+# Detached so tini, not t3, reaps it.
+(t3codebox-browser-setup &)
+
+exec "$@"

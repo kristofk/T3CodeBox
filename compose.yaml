@@ -1,0 +1,63 @@
+# T3CodeBox: the T3 Code server plus a browser the agents drive and you watch from any device.
+# Settings live in .env (copy .env.example); every one has a working default.
+name: t3codebox
+
+services:
+  t3codebox:
+    image: ${T3CODEBOX_IMAGE:-ghcr.io/kristofk/t3codebox}:${T3CODEBOX_TAG:-latest}
+    container_name: t3codebox
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      - TZ
+      - BROWSER_MCP
+      - T3CODE_TELEMETRY_ENABLED
+      - CLAUDE_CODE_OAUTH_TOKEN
+      - ANTHROPIC_API_KEY
+      - OPENAI_API_KEY
+      - CURSOR_API_KEY
+      - XAI_API_KEY
+      - GH_TOKEN
+      - GIT_AUTHOR_NAME
+      - GIT_AUTHOR_EMAIL
+      - GIT_COMMITTER_NAME
+      - GIT_COMMITTER_EMAIL
+    ports:
+      - "127.0.0.1:${T3CODE_PORT:-3773}:3773"
+    volumes:
+      - home:/home/t3codebox
+      - workspace:/workspace
+    networks:
+      - default
+      - devtools
+    # mem_limit: 8g
+
+  browser:
+    image: ${T3CODEBOX_BROWSER_IMAGE:-ghcr.io/kristofk/t3codebox-browser}:${T3CODEBOX_TAG:-latest}
+    container_name: t3codebox-browser
+    profiles: [browser]
+    restart: unless-stopped
+    shm_size: 1gb
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-Etc/UTC}
+      PASSWORD: ${BROWSER_PASSWORD:-}
+    ports:
+      - "127.0.0.1:${BROWSER_PORT:-3774}:3000"
+    volumes:
+      - browser:/config
+    networks:
+      - devtools
+
+networks:
+  # Carries the browser's DevTools port between the two containers; nothing else joins it.
+  devtools: {}
+
+volumes:
+  home:
+    name: t3codebox-home
+  workspace:
+    name: t3codebox-workspace
+  browser:
+    name: t3codebox-browser

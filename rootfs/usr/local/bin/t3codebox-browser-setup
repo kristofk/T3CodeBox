@@ -1,0 +1,84 @@
+#!/bin/bash
+# Adds a "browser" MCP server to each agent's user config when the browser container is running.
+# Only adds what is missing; never changes an entry the user made. BROWSER_MCP=off skips it.
+set -uo pipefail
+
+log() { echo "t3codebox: $*"; }
+
+if [ "${BROWSER_MCP:-on}" = "off" ]; then
+  exit 0
+fi
+
+host=${BROWSER_HOST:-browser}
+for _ in $(seq 30); do
+  getent hosts "$host" >/dev/null && break
+  sleep 1
+done
+if ! getent hosts "$host" >/dev/null; then
+  log "no browser container at '$host'; agents get no browser tool"
+  exit 0
+fi
+
+command=/usr/local/bin/t3codebox-browser-mcp
+added=()
+
+# add_json <file> <jq path> <json value>: set the path if it is missing; skip files that are not plain JSON.
+add_json() {
+  local file=$1 path=$2 value=$3 tmp
+  mkdir -p "$(dirname "$file")"
+  [ -s "$file" ] || echo '{}' > "$file"
+  if ! jq empty "$file" 2>/dev/null; then
+    log "skipped $file: not plain JSON; add the browser MCP server by hand"
+    return 1
+  fi
+  jq -e "$path != null" "$file" >/dev/null && return 1
+  tmp=$(mktemp)
+  jq --argjson v "$value" "$path = \$v" "$file" > "$tmp" && cat "$tmp" > "$file"
+  rm -f "$tmp"
+}
+
+# Claude Code
+if command -v claude >/dev/null; then
+  if ! { [ -s "$HOME/.claude.json" ] && jq -e '.mcpServers.browser != null' "$HOME/.claude.json" >/dev/null 2>&1; }; then
+    claude mcp add --scope user browser -- "$command" >/dev/null 2>&1 && added+=(claude)
+  fi
+fi
+
+# Codex
+if command -v codex >/dev/null; then
+  config="$HOME/.codex/config.toml"
+  mkdir -p "$(dirname "$config")"
+  touch "$config"
+  if ! grep -q '^\[mcp_servers\.browser\]' "$config"; then
+    printf '\n[mcp_servers.browser]\ncommand = "%s"\n' "$command" >> "$config"
+    added+=(codex)
+  fi
+fi
+
+# OpenCode
+if command -v opencode >/dev/null; then
+  if [ -e "$HOME/.config/opencode/opencode.jsonc" ]; then
+    log "skipped OpenCode: opencode.jsonc exists; add the browser MCP server by hand"
+  elif add_json "$HOME/.config/opencode/opencode.json" '.mcp.browser' \
+      "{\"type\":\"local\",\"command\":[\"$command\"],\"enabled\":true}"; then
+    added+=(opencode)
+  fi
+fi
+
+# Grok Build
+if command -v grok >/dev/null; then
+  if ! grep -qs '^\[mcp_servers\.browser\]' "$HOME/.grok/config.toml"; then
+    grok mcp add --scope user browser "$command" >/dev/null 2>&1 && added+=(grok)
+  fi
+fi
+
+# Cursor
+if command -v cursor-agent >/dev/null; then
+  if add_json "$HOME/.cursor/mcp.json" '.mcpServers.browser' "{\"command\":\"$command\",\"args\":[]}"; then
+    added+=(cursor)
+  fi
+fi
+
+if [ ${#added[@]} -gt 0 ]; then
+  log "added the browser MCP server for: ${added[*]}"
+fi

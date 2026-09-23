@@ -1,0 +1,36 @@
+# Daily Trivy scan of the published images. CRITICAL with a fix: rebuild. HIGH with a fix: issue.
+name: scan
+
+on:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+  issues: write
+  actions: write
+
+env:
+  REGISTRY: ${{ vars.REGISTRY || format('ghcr.io/{0}', github.repository_owner) }}
+
+jobs:
+  scan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: make scan
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - if: failure()
+        run: |
+          echo "The scan workflow failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > body.md
+          ci/forge.sh issue "Security scan failed" body.md
+        env:
+          GH_TOKEN: ${{ github.token }}
