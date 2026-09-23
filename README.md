@@ -72,7 +72,7 @@ docker restart t3codebox
 ### LAN or reverse proxy
 
 - **Reverse proxy** (Caddy, Traefik, nginx, Nginx Proxy Manager): proxy HTTPS to `127.0.0.1:3773` and `127.0.0.1:3774` with WebSocket support, and use the proxy's URL as `--base-url`.
-- **LAN without TLS**: publish on all interfaces by editing the `ports:` lines in `compose.yaml` (`"3773:3773"`). The browser also serves self-signed HTTPS on its port 3001 (`"3775:3001"`).
+- **LAN without TLS**: publish on all interfaces by editing the `ports:` lines in `compose.yaml` (`"3773:3773"`). The browser also serves self-signed HTTPS on its port 3001 (`"3775:3001"`); use that one from phones, because the desktop's session cookie needs HTTPS and iOS Safari needs the cookie.
 
 ## Sign in to the agents
 
