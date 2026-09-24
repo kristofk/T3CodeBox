@@ -442,6 +442,257 @@ class Jobs {
   }
 }
 
+// ---- QR code of a new pairing link (ISO/IEC 18004: byte mode, error correction level M) ----
+
+// Error correction codewords per block, and blocks, at level M for versions 1–40.
+const QR_EC_PER_BLOCK = [0, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26,
+  26, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28];
+const QR_BLOCKS = [0, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16,
+  17, 17, 18, 20, 21, 23, 25, 26, 28, 29, 31, 33, 35, 37, 38, 40, 43, 45, 47, 49];
+
+// Modules left for data and error correction once the fixed patterns are placed.
+function qrRawModules(version) {
+  let modules = (16 * version + 128) * version + 64;
+  if (version >= 2) {
+    const alignments = Math.floor(version / 7) + 2;
+    modules -= (25 * alignments - 10) * alignments - 55;
+    if (version >= 7) modules -= 36;
+  }
+  return modules;
+}
+
+const qrDataCodewords = (version) => Math.floor(qrRawModules(version) / 8) - QR_EC_PER_BLOCK[version] * QR_BLOCKS[version];
+
+// Multiplication in GF(256) with the QR polynomial 0x11D.
+function gfMultiply(x, y) {
+  let z = 0;
+  for (let i = 7; i >= 0; i--) {
+    z = (z << 1) ^ ((z >>> 7) * 0x11d);
+    z ^= ((y >>> i) & 1) * x;
+  }
+  return z;
+}
+
+// Reed–Solomon: the generator polynomial of a degree, and the error correction bytes of a block.
+function rsDivisor(degree) {
+  const result = new Array(degree).fill(0);
+  result[degree - 1] = 1;
+  let root = 1;
+  for (let i = 0; i < degree; i++) {
+    for (let j = 0; j < degree; j++) {
+      result[j] = gfMultiply(result[j], root);
+      if (j + 1 < degree) result[j] ^= result[j + 1];
+    }
+    root = gfMultiply(root, 0x02);
+  }
+  return result;
+}
+
+function rsRemainder(data, divisor) {
+  const result = divisor.map(() => 0);
+  for (const byte of data) {
+    const factor = byte ^ result.shift();
+    result.push(0);
+    divisor.forEach((coefficient, i) => (result[i] ^= gfMultiply(coefficient, factor)));
+  }
+  return result;
+}
+
+// The data as codewords: mode, length, bytes, terminator and padding, split into blocks with their error
+// correction, then interleaved.
+function qrCodewords(bytes, version) {
+  const bits = [];
+  const put = (value, length) => {
+    for (let i = length - 1; i >= 0; i--) bits.push((value >>> i) & 1);
+  };
+  put(0b0100, 4);
+  put(bytes.length, version < 10 ? 8 : 16);
+  for (const byte of bytes) put(byte, 8);
+  const capacity = qrDataCodewords(version) * 8;
+  put(0, Math.min(4, capacity - bits.length));
+  put(0, (8 - (bits.length % 8)) % 8);
+  for (let pad = 0xec; bits.length < capacity; pad ^= 0xec ^ 0x11) put(pad, 8);
+  const data = [];
+  for (let i = 0; i < bits.length; i += 8) data.push(bits.slice(i, i + 8).reduce((byte, bit) => (byte << 1) | bit, 0));
+
+  const blockCount = QR_BLOCKS[version];
+  const ecLength = QR_EC_PER_BLOCK[version];
+  const raw = Math.floor(qrRawModules(version) / 8);
+  const shortBlocks = blockCount - (raw % blockCount);
+  const shortLength = Math.floor(raw / blockCount);
+  const divisor = rsDivisor(ecLength);
+  const blocks = [];
+  for (let i = 0, k = 0; i < blockCount; i++) {
+    const chunk = data.slice(k, k + shortLength - ecLength + (i < shortBlocks ? 0 : 1));
+    k += chunk.length;
+    const block = [...chunk, ...rsRemainder(chunk, divisor)];
+    if (i < shortBlocks) block.splice(chunk.length, 0, 0); // placeholder, so every block is as long
+    blocks.push(block);
+  }
+  const result = [];
+  for (let i = 0; i < blocks[0].length; i++) {
+    blocks.forEach((block, j) => {
+      if (i !== shortLength - ecLength || j >= shortBlocks) result.push(block[i]);
+    });
+  }
+  return result;
+}
+
+function qrAlignmentPositions(version) {
+  if (version === 1) return [];
+  const count = Math.floor(version / 7) + 2;
+  const step = version === 32 ? 26 : Math.ceil((version * 4 + 4) / (count * 2 - 2)) * 2;
+  const positions = [6];
+  for (let position = version * 4 + 10; positions.length < count; position -= step) positions.splice(1, 0, position);
+  return positions;
+}
+
+const QR_MASKS = [
+  (x, y) => (x + y) % 2 === 0,
+  (x, y) => y % 2 === 0,
+  (x) => x % 3 === 0,
+  (x, y) => (x + y) % 3 === 0,
+  (x, y) => (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0,
+  (x, y) => ((x * y) % 2) + ((x * y) % 3) === 0,
+  (x, y) => (((x * y) % 2) + ((x * y) % 3)) % 2 === 0,
+  (x, y) => (((x + y) % 2) + ((x * y) % 3)) % 2 === 0,
+];
+
+// The standard's penalty for a finished symbol: runs of five or more, 2×2 blocks, finder-like
+// 1:1:3:1:1 patterns with four light modules on one side, and an unbalanced share of dark modules.
+// It only decides which of the eight masks is used; every mask gives a valid code.
+function qrPenalty(modules) {
+  const size = modules.length;
+  let penalty = 0;
+  const lines = [];
+  for (let i = 0; i < size; i++) {
+    lines.push(modules[i]);
+    lines.push(modules.map((row) => row[i]));
+  }
+  for (const line of lines) {
+    for (let start = 0; start < size; ) {
+      let end = start;
+      while (end < size && line[end] === line[start]) end++;
+      if (end - start >= 5) penalty += end - start - 2;
+      start = end;
+    }
+    // Around the symbol is the light margin, so a pattern at the edge still counts.
+    const text = `0000${line.map((dark) => (dark ? "1" : "0")).join("")}0000`;
+    for (const pattern of ["10111010000", "00001011101"]) {
+      for (let at = text.indexOf(pattern); at >= 0; at = text.indexOf(pattern, at + 1)) penalty += 40;
+    }
+  }
+  for (let y = 0; y + 1 < size; y++) {
+    for (let x = 0; x + 1 < size; x++) {
+      const dark = modules[y][x];
+      if (modules[y][x + 1] === dark && modules[y + 1][x] === dark && modules[y + 1][x + 1] === dark) penalty += 3;
+    }
+  }
+  const dark = modules.flat().filter(Boolean).length;
+  penalty += Math.floor(Math.abs((dark * 100) / (size * size) - 50) / 5) * 10;
+  return penalty;
+}
+
+// A QR code for `text`: rows of "0" (light) and "1" (dark), without the margin. The smallest version that
+// fits, and the mask with the lowest penalty unless one is given.
+function qrCode(text, forcedMask = null) {
+  const bytes = [...Buffer.from(String(text), "utf8")];
+  let version = 1;
+  while (version <= 40 && qrDataCodewords(version) * 8 < 4 + (version < 10 ? 8 : 16) + bytes.length * 8) version++;
+  if (version > 40) throw new Error("Too long for a QR code.");
+  const size = version * 4 + 17;
+  const modules = Array.from({ length: size }, () => new Array(size).fill(false));
+  const fixed = Array.from({ length: size }, () => new Array(size).fill(false));
+  const set = (x, y, dark) => {
+    modules[y][x] = dark;
+    fixed[y][x] = true;
+  };
+
+  for (let i = 0; i < size; i++) {
+    set(6, i, i % 2 === 0);
+    set(i, 6, i % 2 === 0);
+  }
+  for (const [cx, cy] of [[3, 3], [size - 4, 3], [3, size - 4]]) {
+    for (let dy = -4; dy <= 4; dy++) {
+      for (let dx = -4; dx <= 4; dx++) {
+        const distance = Math.max(Math.abs(dx), Math.abs(dy));
+        const x = cx + dx;
+        const y = cy + dy;
+        if (x >= 0 && x < size && y >= 0 && y < size) set(x, y, distance !== 2 && distance !== 4);
+      }
+    }
+  }
+  const alignments = qrAlignmentPositions(version);
+  alignments.forEach((cx, i) => {
+    alignments.forEach((cy, j) => {
+      const nearFinder = (i === 0 && j === 0) || (i === 0 && j === alignments.length - 1) || (i === alignments.length - 1 && j === 0);
+      if (nearFinder) return;
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) set(cx + dx, cy + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+    });
+  });
+  const drawFormat = (mask) => {
+    const data = mask; // level M's format bits are 00
+    let remainder = data;
+    for (let i = 0; i < 10; i++) remainder = (remainder << 1) ^ ((remainder >>> 9) * 0x537);
+    const bits = ((data << 10) | remainder) ^ 0x5412;
+    const bit = (i) => ((bits >>> i) & 1) === 1;
+    for (let i = 0; i <= 5; i++) set(8, i, bit(i));
+    set(8, 7, bit(6));
+    set(8, 8, bit(7));
+    set(7, 8, bit(8));
+    for (let i = 9; i < 15; i++) set(14 - i, 8, bit(i));
+    for (let i = 0; i < 8; i++) set(size - 1 - i, 8, bit(i));
+    for (let i = 8; i < 15; i++) set(8, size - 15 + i, bit(i));
+    set(8, size - 8, true);
+  };
+  drawFormat(0);
+  if (version >= 7) {
+    let remainder = version;
+    for (let i = 0; i < 12; i++) remainder = (remainder << 1) ^ ((remainder >>> 11) * 0x1f25);
+    const bits = (version << 12) | remainder;
+    for (let i = 0; i < 18; i++) {
+      const dark = ((bits >>> i) & 1) === 1;
+      const a = size - 11 + (i % 3);
+      const b = Math.floor(i / 3);
+      set(a, b, dark);
+      set(b, a, dark);
+    }
+  }
+
+  const codewords = qrCodewords(bytes, version);
+  let bitIndex = 0;
+  for (let right = size - 1; right >= 1; right -= 2) {
+    if (right === 6) right = 5;
+    for (let vertical = 0; vertical < size; vertical++) {
+      for (let j = 0; j < 2; j++) {
+        const x = right - j;
+        const y = ((right + 1) & 2) === 0 ? size - 1 - vertical : vertical;
+        if (fixed[y][x] || bitIndex >= codewords.length * 8) continue;
+        modules[y][x] = ((codewords[bitIndex >>> 3] >>> (7 - (bitIndex & 7))) & 1) === 1;
+        bitIndex++;
+      }
+    }
+  }
+
+  const applyMask = (mask) => {
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) if (!fixed[y][x] && QR_MASKS[mask](x, y)) modules[y][x] = !modules[y][x];
+  };
+  let mask = forcedMask;
+  if (mask === null) {
+    let best = Infinity;
+    for (let candidate = 0; candidate < 8; candidate++) {
+      applyMask(candidate);
+      drawFormat(candidate);
+      const penalty = qrPenalty(modules);
+      if (penalty < best) [best, mask] = [penalty, candidate];
+      applyMask(candidate);
+    }
+  }
+  applyMask(mask);
+  drawFormat(mask);
+  return modules.map((row) => row.map((dark) => (dark ? "1" : "0")).join(""));
+}
+
 // ---- Provider cards: parsed status plus which variables are set (never their values) ----
 
 const docker = (command) => `docker exec -it t3codebox ${command}`;
@@ -933,7 +1184,7 @@ async function createPairing({ baseUrl, ttl, label }) {
   const result = await run("t3", ["auth", "pairing", "create", "--base-url", baseUrl, "--ttl", ttl, "--label", label, "--json"]);
   const pairing = parsePairingCreate(result.stdout);
   if (!pairing) throw new Error(lastLine(result.stderr) || "T3 did not create a pairing link.");
-  return pairing;
+  return { ...pairing, qr: qrCode(pairing.pairUrl) };
 }
 
 // kind: "pairing" (an unused link) or "session" (a paired device).
@@ -1229,7 +1480,7 @@ module.exports = {
   agentOf, countAgents, parseClaudeStatus, parseCodexStatus, parseCursorStatus, parseOpencodeAuth, parseGhStatus,
   parseT3Sessions, parseT3Pairings, parsePairingCreate, parseSkillFrontmatter, parseDu, userAgentLabel, versionCache,
   outputLines, parseSkillsListing, parseSkillsAdd, validSkillSource, validSkillName, validId, checkGitAuthor,
-  checkPairingRequest, findT3Server, Jobs,
+  checkPairingRequest, findT3Server, Jobs, qrCode,
   claudeCard, codexCard, cursorCard, grokCard, opencodeCard, githubCard,
   passwordMatches, loadPassword, SessionStore,
 };

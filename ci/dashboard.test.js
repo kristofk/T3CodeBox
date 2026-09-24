@@ -535,6 +535,67 @@ describe("settings: git author, pairing, restart", () => {
   });
 });
 
+describe("QR codes", () => {
+  // Expected values come from the Python `qrcode` library (level M, byte mode, the mask given), not from
+  // this encoder; zxing-cpp decoded the encoder's output when it was written.
+  const crypto = require("node:crypto");
+  const fingerprint = (rows) => crypto.createHash("sha256").update(rows.join("\n")).digest("hex");
+
+  test("a version 1 code, module by module", () => {
+    assert.deepEqual(d.qrCode("t3", 0), [
+      "111111100101001111111",
+      "100000101101101000001",
+      "101110100011001011101",
+      "101110100100101011101",
+      "101110101101101011101",
+      "100000100111001000001",
+      "111111101010101111111",
+      "000000000110000000000",
+      "101010100100100010010",
+      "110101001101010101001",
+      "100110100011011101001",
+      "101000000011110111010",
+      "001111110111011100111",
+      "000000001110001000101",
+      "111111100100100010011",
+      "100000100000001000111",
+      "101110101110101010101",
+      "101110100001010101010",
+      "101110101111011101101",
+      "100000100011110111010",
+      "111111101011011101111",
+    ]);
+  });
+
+  test("a pairing link under each of the eight masks", () => {
+    const link = "https://thunderbox.example.ts.net:4773/pair#token=ABCDEFGHJKLM";
+    const expected = [
+      "d9dae1362779ee3cb6859d5a95334dda8f5f5d09bc2945d8b2fb47b416fadeab",
+      "4443a2a261031909844db67f60c58baacbe0c0cb8d2a67665a7ecd49491a6c68",
+      "07957d3dd156461d3d7d0b1f6c660906474101420eab89bb90ebcec272be7cd2",
+      "c6d9ab632b111bc9e85444dff8211930f497d496c1b762f02fcaa04e383371c8",
+      "602a437021d7d07945f8882b0b964427730e5064314f35005c74e49bb6977a94",
+      "1fbb134c8e2006914b462909b7ca6544b3d005d1aaca4f690e645c5f4596e273",
+      "09cb50b2b96f1a6d00c3734f46c30eedb52f841f5e6ba7df64f507d9bc865813",
+      "5239e259e13b74b3ad94cdbb55c7e08dc6f216dfb6f92d554ad361d7a3a1df58",
+    ];
+    expected.forEach((sha, mask) => assert.equal(fingerprint(d.qrCode(link, mask)), sha, `mask ${mask}`));
+    assert.equal(d.qrCode(link).length, 33); // version 4
+  });
+
+  test("version information (7 and up) and the 16-bit length (10 and up)", () => {
+    const text = (length) => "https://example.com/pair#token=" + "x".repeat(length - 31);
+    assert.equal(d.qrCode(text(125), 3).length, 49);
+    assert.equal(fingerprint(d.qrCode(text(125), 3)), "e31fe65d08d1d86b6bd66db0e2b07aacba3db2f7e33cdfb4b42faac266ecdb86");
+    assert.equal(d.qrCode(text(230), 3).length, 61);
+    assert.equal(fingerprint(d.qrCode(text(230), 3)), "330c2202eaf69747f42e0fc4c024a9173f15b5ef83b311d28be16114422c843b");
+  });
+
+  test("too long for any version", () => {
+    assert.throws(() => d.qrCode("x".repeat(3000)), /Too long/);
+  });
+});
+
 describe("jobs", () => {
   const settle = () => new Promise(setImmediate);
 
