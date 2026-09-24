@@ -14,9 +14,10 @@ auto-merge when the pull request is marked ready; this skill never merges or tur
    `gh pr edit --title ... --body ...` if needed.
 3. **Review.** Read `gh pr diff` as a reviewer would (or run the code-review skill at low effort).
    Fix what you find, push, and review again.
-4. **Ready.** `gh pr ready`. Within a minute `gh pr view --json autoMergeRequest` shows auto-merge
-   on. If it doesn't, look at the automerge run (`gh run list --workflow automerge.yml`) and report
-   it instead of turning auto-merge on by hand.
+4. **Ready.** `gh pr ready`. Within a minute `gh pr view --json state,autoMergeRequest` shows
+   auto-merge on, or the pull request already merged if its checks had passed while it was a draft.
+   If neither, look at the automerge run (`gh run list --workflow automerge.yml`) and report it
+   instead of turning auto-merge on by hand.
 5. **Watch CI.** `gh pr checks --watch`; the test jobs take about five minutes. On a failure, read
    `gh run view <run-id> --log-failed`:
    - Upstream trouble before the tests ran (a registry's `429 Too Many Requests` or 5xx, a download
