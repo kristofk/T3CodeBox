@@ -202,6 +202,7 @@ Tags, the same on both images:
 | `latest` | Newest build that passed the tests |
 | `0.0.42` | Newest build for T3 Code 0.0.42; moves on security rebuilds |
 | `0.0.42-1`, `0.0.42-2`, … | One exact build, never moves. `-1` is the first build for that T3 Code version, higher numbers are security rebuilds |
+| `edge` | The newest `main`, tested like a release but not released: for trying changes before they ship. Moves with every change; switch back to `latest` any time |
 
 The providers are updated only through the image: their self-updaters are off, so every provider's version matches what was tested. Every release lists its exact component versions and test results on the [releases page](https://github.com/kristofk/T3CodeBox/releases).
 
@@ -222,6 +223,7 @@ make build PROVIDERS="claude codex"      # only some providers
 
 - Every 15 minutes CI checks for a new stable T3 Code release. A new one is built with the newest version of every other component, on native amd64 and arm64 runners, and tested on each: non-root user, health endpoint, T3 version, every provider CLI, pairing link, state across a restart, the dashboard's sign-in and status, no sudo and no Docker socket, the browser and an agent-side connection to it. Only then are the tags moved.
 - A daily Trivy scan checks the published images. A critical finding with a fix triggers a rebuild; a high one opens an issue.
+- Every change merged to `main` goes through the same build and tests and is published as `edge` only; `latest` and the version tags wait for a release.
 - T3 Code preview and nightly builds are not followed.
 
 ## Icon

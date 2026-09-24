@@ -27,6 +27,10 @@ re-run it: `gh run rerun <run-id> --failed`. Otherwise step 5: back to draft, fi
 The pull request title becomes the commit subject on `main`, and the description its body: say what
 changed and why, and `Closes #N` for the issue it fixes.
 
+Every merge to `main` is built, tested and published as the `edge` tag (`.github/workflows/edge.yml`), so
+it can be tried on a real box before a release. `edge` and `latest` share the home volume format: a user
+must be able to switch from `edge` back to `latest` and keep their data.
+
 ### From a fork
 
 Open the pull request from your fork as usual. A maintainer approves its CI run, reviews it, and merges.
