@@ -4,7 +4,7 @@
 # the shell-form HEALTHCHECK expands T3CODE_PORT (DL3025), pipefail is set through SHELL (DL4006).
 . "$(dirname "$0")/lib.sh"
 
-scripts=(ci/*.sh rootfs/usr/local/bin/* browser/rootfs/etc/s6-overlay/s6-rc.d/*/run)
+scripts=(ci/*.sh Icon/render.sh rootfs/usr/local/bin/* browser/rootfs/etc/s6-overlay/s6-rc.d/*/run)
 $DOCKER run --rm -v "$ROOT:/src:ro" -w /src koalaman/shellcheck:stable -S warning "${scripts[@]}"
 for dockerfile in Dockerfile browser/Dockerfile; do
   $DOCKER run --rm -i hadolint/hadolint:latest hadolint --no-color --failure-threshold warning \

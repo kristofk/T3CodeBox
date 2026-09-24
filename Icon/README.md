@@ -8,6 +8,9 @@ A line-drawn container whose edges spell **T**, **3** and **C** (T3Code), and wh
   - `adaptive/` — one file per size with all three color sets; switches with light/dark mode via an embedded style, which some renderers strip.
   - `light/`, `dark/`, `default/` — each color set as its own file, for places that strip SVG styles (use with `<picture><source media="(prefers-color-scheme: dark)">`).
   - `mono/` — single color, uses `currentColor`.
+  - `png/` — the default colors at 256, 512 and 1024 px on a transparent background, for places that take no SVG.
+- `social-preview.png` — the repository's link preview (1280×640, Settings → General → Social preview), drawn from `social-preview.html`.
+- `render.sh` — renders `png/` and `social-preview.png` from the SVGs with headless Chrome.
 - `history/` — the full design history (`Design History.dc.html`, newest turn at the top) and every SVG exported along the way in `history/icons/`.
 
 ## Sizes

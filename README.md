@@ -121,6 +121,7 @@ After the password prompt, a session cookie keeps you signed in (Safari sends no
 - Set your own password: `BROWSER_PASSWORD` in `.env`. The generated one is kept in `/config/.t3codebox-password` in the browser volume: `docker exec t3codebox-browser cat /config/.t3codebox-password`.
 - Browser without the agents' tool: `BROWSER_MCP=off`.
 - No browser at all: delete the `COMPOSE_PROFILES=browser` line from `.env`, then `docker compose up -d --remove-orphans`.
+- Tab and sidebar title: `T3CodeBox browser`; change it with `TITLE` and `SELKIES_UI_TITLE` in the `browser` service.
 - More Chromium flags or desktop settings: every [linuxserver/chromium](https://docs.linuxserver.io/images/docker-chromium/) variable works (for example `CHROME_CLI`), set in the `browser` service.
 
 On start, T3CodeBox adds a `browser` MCP server to each agent's user config (`~/.claude.json`, `~/.codex/config.toml`, `~/.config/opencode/opencode.json`, `~/.cursor/mcp.json`, `~/.grok/config.toml`) when it is missing. It never changes an entry you made; delete or rename the entry to use your own.
@@ -199,6 +200,10 @@ make build PROVIDERS="claude codex"      # only some providers
 - Every 15 minutes CI checks for a new stable T3 Code release. A new one is built with the newest version of every other component, on native amd64 and arm64 runners, and tested on each: non-root user, health endpoint, T3 version, every provider CLI, pairing link, state across a restart, no sudo and no Docker socket, the browser and an agent-side connection to it. Only then are the tags moved.
 - A daily Trivy scan checks the published images. A critical finding with a fix triggers a rebuild; a high one opens an issue.
 - T3 Code preview and nightly builds are not followed.
+
+## Icon
+
+The icon is in [`Icon/`](Icon): SVGs for light and dark backgrounds and PNGs. For a dashboard such as Homepage, Homarr, Dashy or Unraid, use `https://raw.githubusercontent.com/kristofk/T3CodeBox/main/Icon/final/png/t3codebox-512.png`.
 
 ## Licence
 
