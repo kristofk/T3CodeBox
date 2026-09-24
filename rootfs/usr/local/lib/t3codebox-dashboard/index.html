@@ -59,6 +59,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 ul.list { list-style: none; margin: 0; padding: 0; }
 ul.list > li { padding: .55rem 0; border-top: 1px solid var(--border); display: flex; justify-content: space-between; gap: .75rem; align-items: center; }
 ul.list > li:first-child { border-top: 0; }
+ul.list > li > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .chip { display: inline-block; font-size: .75rem; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 .45rem; margin: 0 .1rem .1rem 0; }
 .clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; margin: .15rem 0 0; }
 .clamp.open { display: block; }
@@ -68,6 +69,14 @@ form { display: grid; gap: .6rem; max-width: 22rem; }
 input { font: inherit; padding: .5rem .6rem; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); }
 .offscreen { position: absolute; left: -9999px; }
 .note { font-size: .85rem; color: var(--muted); margin: .6rem 0 0; }
+select { font: inherit; padding: .45rem .5rem; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); }
+label { font-size: .85rem; color: var(--muted); }
+.actions { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; }
+.log { font: .8rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code); border-radius: 6px; padding: .5rem .6rem; margin: .4rem 0 0; max-height: 14rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.job { margin-top: .75rem; }
+.result { margin-top: .75rem; padding: .6rem .75rem; border: 1px solid var(--border); border-radius: 8px; }
+a.button { font-size: .9rem; color: var(--accent); border: 1px solid var(--border); border-radius: 7px; padding: .25rem .7rem; text-decoration: none; }
+button.danger { color: var(--bad); }
 </style>
 </head>
 <body>
@@ -89,7 +98,8 @@ input { font: inherit; padding: .5rem .6rem; border: 1px solid var(--border); bo
   <div id="board" hidden>
     <div id="banner" role="alert" hidden><strong>Needs attention</strong><ul></ul></div>
     <section>
-      <h2>Health</h2>
+      <h2>Health <button id="restart" type="button">Restart T3</button></h2>
+      <p id="restart-note" class="note" hidden></p>
       <div class="panel">
         <dl id="health"></dl>
         <p class="note">Folder sizes: <span id="sizes">not calculated</span> <button id="sizes-button" type="button">Calculate</button></p>
@@ -101,11 +111,46 @@ input { font: inherit; padding: .5rem .6rem; border: 1px solid var(--border); bo
     </section>
     <section>
       <h2>T3 access</h2>
-      <div id="access" class="panel"><p class="muted">Loading…</p></div>
+      <div class="panel">
+        <div id="access"><p class="muted">Loading…</p></div>
+        <h3>Pair a device</h3>
+        <form id="pair-form">
+          <label for="pair-base">T3's address, as the device reaches it</label>
+          <input id="pair-base" type="url" required autocomplete="off">
+          <label for="pair-ttl">Link valid for</label>
+          <select id="pair-ttl">
+            <option value="15m">15 minutes</option>
+            <option value="1h" selected>1 hour</option>
+            <option value="1d">1 day</option>
+            <option value="7d">7 days</option>
+            <option value="30d">30 days</option>
+          </select>
+          <label for="pair-label">Device name (optional)</label>
+          <input id="pair-label" maxlength="60" autocomplete="off" placeholder="iPhone">
+          <div class="actions"><button class="primary" type="submit">Create pairing link</button></div>
+          <p id="pair-error" class="bad" hidden></p>
+        </form>
+        <div id="pair-result" class="result" hidden></div>
+      </div>
     </section>
     <section>
       <h2>Skills</h2>
-      <div id="skills" class="panel"><p class="muted">Loading…</p></div>
+      <div class="panel">
+        <div id="skills"><p class="muted">Loading…</p></div>
+        <h3>Add a skill</h3>
+        <form id="skill-form">
+          <label for="skill-source">From a GitHub repository (owner/repo) or an https URL</label>
+          <input id="skill-source" required autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="mattpocock/skills">
+          <label for="skill-name">Skill</label>
+          <input id="skill-name" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Show the repository's skills, or type a name">
+          <div class="actions">
+            <button id="skill-list" type="button">Show skills</button>
+            <button class="primary" type="submit">Install</button>
+          </div>
+          <p id="skill-error" class="bad" hidden></p>
+        </form>
+        <div id="skill-job" class="job" hidden></div>
+      </div>
     </section>
     <section>
       <h2>Dashboard devices</h2>
@@ -118,7 +163,7 @@ input { font: inherit; padding: .5rem .6rem; border: 1px solid var(--border); bo
 // Everything shown comes from CLIs, repositories and user agents: it goes in as text, never as HTML.
 
 const $ = (selector) => document.querySelector(selector);
-const NAMES = { t3: "T3", claude: "Claude Code", codex: "Codex", cursor: "Cursor", grok: "Grok Build", opencode: "OpenCode", gh: "gh", node: "Node" };
+const NAMES = { t3: "T3", claude: "Claude Code", codex: "Codex", cursor: "Cursor", grok: "Grok Build", opencode: "OpenCode", gh: "gh", skills: "skills", node: "Node" };
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function h(tag, props, ...children) {
@@ -176,6 +221,9 @@ function countdown(ms) {
 
 class SignedOut extends Error {}
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// GET without a body, POST with one. A refused request throws the dashboard's own message.
 async function api(path, body) {
   const options = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
   const response = await fetch(path, options);
@@ -183,8 +231,17 @@ async function api(path, body) {
     showSignIn();
     throw new SignedOut();
   }
-  if (!response.ok) throw new Error(`the dashboard answered ${response.status}`);
+  if (!response.ok) {
+    const answer = await response.json().catch(() => null);
+    throw new Error(answer?.error || `the dashboard answered ${response.status}`);
+  }
   return response.status === 204 ? null : response.json();
+}
+
+// A form's error line: shown with a message, hidden without one.
+function showError(element, message) {
+  element.textContent = message || "";
+  element.hidden = !message;
 }
 
 // Anything red, from every section, listed at the top.
@@ -256,19 +313,46 @@ function renderHealth(s) {
 
 let healthTimer = null;
 let boardShown = false;
+let restartedAt = null;
 
 async function loadHealth() {
   clearTimeout(healthTimer);
   try {
-    renderHealth(await api("api/status"));
+    const status = await api("api/status");
+    renderHealth(status);
     if (!boardShown) showBoard();
+    // Back after a restart: a new container, with T3 answering.
+    if (restartedAt && status.t3.up && status.uptime.container !== null && status.uptime.container < (Date.now() - restartedAt) / 1000) {
+      restartedAt = null;
+      $("#restart-note").textContent = "T3 restarted.";
+      setTimeout(() => ($("#restart-note").hidden = true), 10000);
+      loadProviders();
+      loadAccess();
+    }
   } catch (error) {
     if (error instanceof SignedOut) return;
     if (!boardShown) showBoard();
-    setReds("health", [`Could not load the status: ${error.message}.`]);
+    if (!restartedAt) setReds("health", [`Could not load the status: ${error.message}.`]);
   }
-  if (document.visibilityState === "visible") healthTimer = setTimeout(loadHealth, 5000);
+  if (document.visibilityState === "visible") healthTimer = setTimeout(loadHealth, restartedAt ? 2000 : 5000);
 }
+
+$("#restart").addEventListener("click", async (event) => {
+  if (!confirm("Restart T3? Running agents are interrupted. The container restarts, and this page follows it.")) return;
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    await api("api/restart", {});
+    restartedAt = Date.now();
+    $("#restart-note").textContent = "Restarting T3…";
+    $("#restart-note").hidden = false;
+    setTimeout(loadHealth, 2000);
+  } catch (error) {
+    if (!(error instanceof SignedOut)) alert(`Could not restart T3: ${error.message}`);
+  } finally {
+    button.disabled = false;
+  }
+});
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && boardShown) loadHealth();
@@ -312,7 +396,48 @@ function commandLine(command) {
   return h("div", { class: "command" }, h("code", null, command), button);
 }
 
-function providerCard(p) {
+// The commit author, on the GitHub card: shown, and edited in place.
+function gitAuthor(git) {
+  const box = h("div", { class: "result" });
+  const show = () => {
+    const who = git.name || git.email ? `${git.name || "(no name)"} <${git.email || "no email"}>` : null;
+    box.replaceChildren(h("div", null,
+      h("div", { class: "actions" },
+        h("span", null, "Commits as ", who ? h("strong", null, who) : muted("nobody yet")),
+        h("button", { type: "button", onclick: edit }, "Edit"),
+      ),
+      git.overrides.length > 0 && h("p", { class: "note" }, `${git.overrides.join(", ")} from .env take precedence over this.`),
+    ));
+  };
+  const edit = () => {
+    const name = h("input", { id: "git-name", autocomplete: "name", maxlength: "100" });
+    const email = h("input", { id: "git-email", type: "email", autocomplete: "email", maxlength: "254" });
+    name.value = git.name || "";
+    email.value = git.email || "";
+    const error = h("p", { class: "bad", hidden: true });
+    const form = h("form", { onsubmit: async (event) => {
+      event.preventDefault();
+      showError(error, "");
+      try {
+        git = await api("api/git", { name: name.value, email: email.value });
+        show();
+      } catch (failure) {
+        if (!(failure instanceof SignedOut)) showError(error, failure.message);
+      }
+    } },
+      h("label", { for: "git-name" }, "Name"), name,
+      h("label", { for: "git-email" }, "Email"), email,
+      h("div", { class: "actions" }, h("button", { class: "primary", type: "submit" }, "Save"), h("button", { type: "button", onclick: show }, "Cancel")),
+      error,
+    );
+    box.replaceChildren(form);
+    name.focus();
+  };
+  show();
+  return box;
+}
+
+function providerCard(p, git) {
   const [text, style] = !p.installed ? ["Not installed", "muted"]
     : p.signedIn === null ? ["Unknown", "muted"]
     : p.signedIn ? ["Signed in", "ok"]
@@ -326,6 +451,7 @@ function providerCard(p) {
     p.warnings.length > 0 && h("ul", { class: "warnings" }, p.warnings.map((warning) => h("li", null, warning))),
     p.notes.map((note) => h("p", { class: "note" }, note)),
     p.signIn && commandLine(p.signIn),
+    p.id === "github" && git && gitAuthor(git),
   );
 }
 
@@ -333,8 +459,8 @@ async function loadProviders() {
   const button = $("#providers-refresh");
   button.disabled = true;
   try {
-    const { providers } = await api("api/providers");
-    $("#providers").replaceChildren(...providers.map(providerCard));
+    const [{ providers }, git] = await Promise.all([api("api/providers"), api("api/git")]);
+    $("#providers").replaceChildren(...providers.map((p) => providerCard(p, git)));
     setReds("providers", providers.flatMap((p) => p.warnings.map((warning) => `${p.name}: ${warning}`)));
   } catch (error) {
     if (!(error instanceof SignedOut)) $("#providers").replaceChildren(failed(error));
@@ -373,23 +499,45 @@ function expiry(at, label, warn) {
   return element;
 }
 
+// Revoke a paired device ("sessions") or an unused link ("pairing"), after asking.
+function revokeButton(kind, id, question) {
+  const button = h("button", { type: "button", class: "danger", onclick: async () => {
+    if (!confirm(question)) return;
+    button.disabled = true;
+    try {
+      await api(`api/${kind}/revoke`, { id });
+      loadAccess();
+    } catch (error) {
+      button.disabled = false;
+      if (!(error instanceof SignedOut)) alert(`Could not revoke: ${error.message}`);
+    }
+  } }, "Revoke");
+  return id ? button : null;
+}
+
 function renderAccess({ sessions, pairings }) {
   countdowns = [];
   const byExpiry = (a, b) => String(a.expiresAt).localeCompare(String(b.expiresAt));
   const devices = sessions === null ? h("p", { class: "bad" }, "Could not read the paired devices.")
     : sessions.length === 0 ? h("p", { class: "muted" }, "No paired devices.")
-    : h("ul", { class: "list" }, [...sessions].sort(byExpiry).map((s) => h("li", null, h("div", null,
-        h("strong", null, s.label || "Unnamed device"), " ", muted([s.os, s.deviceType].filter(Boolean).join(", ")),
-        h("div", { class: "muted" }, `Last connected ${ago(s.lastConnectedAt)}`),
-        expiry(s.expiresAt, s.label || "a paired device", true),
-      ))));
+    : h("ul", { class: "list" }, [...sessions].sort(byExpiry).map((s) => h("li", null,
+        h("div", null,
+          h("strong", null, s.label || "Unnamed device"), " ", muted([s.os, s.deviceType].filter(Boolean).join(", ")),
+          h("div", { class: "muted" }, `Last connected ${ago(s.lastConnectedAt)}`),
+          expiry(s.expiresAt, s.label || "a paired device", true),
+        ),
+        revokeButton("sessions", s.id, `Revoke ${s.label || "this device"}? It is signed out of T3 and has to pair again.`),
+      )));
   const links = pairings === null ? h("p", { class: "bad" }, "Could not read the pairing links.")
     : pairings.length === 0 ? h("p", { class: "muted" }, "No unused pairing links.")
-    : h("ul", { class: "list" }, [...pairings].sort(byExpiry).map((p) => h("li", null, h("div", null,
-        h("strong", null, p.label || "Unlabelled link"),
-        h("div", { class: "muted" }, `Created ${ago(p.createdAt)}`),
-        expiry(p.expiresAt, p.label, false),
-      ))));
+    : h("ul", { class: "list" }, [...pairings].sort(byExpiry).map((p) => h("li", null,
+        h("div", null,
+          h("strong", null, p.label || "Unlabelled link"),
+          h("div", { class: "muted" }, `Created ${ago(p.createdAt)}`),
+          expiry(p.expiresAt, p.label, false),
+        ),
+        revokeButton("pairing", p.id, `Revoke the link ${p.label || ""}? It stops working at once.`),
+      )));
   $("#access").replaceChildren(
     h("h3", null, "Paired devices"), devices,
     h("h3", null, "Unused pairing links"), links,
@@ -397,6 +545,40 @@ function renderAccess({ sessions, pairings }) {
   );
   tick();
 }
+
+// New pairing links. The address defaults to this page's host with the next port (the dashboard's 3772
+// next to T3's 3773, 4772 next to 4773) until one is used; then that one is remembered.
+const BASE_URL_KEY = "t3codebox.pairBaseUrl";
+$("#pair-base").value = localStorage.getItem(BASE_URL_KEY) || `${location.protocol}//${location.hostname}${location.port ? `:${Number(location.port) + 1}` : ""}`;
+
+$("#pair-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = $("#pair-form button[type=submit]");
+  const result = $("#pair-result");
+  button.disabled = true;
+  showError($("#pair-error"), "");
+  try {
+    const baseUrl = $("#pair-base").value.trim();
+    const { pairing } = await api("api/pairing", { baseUrl, ttl: $("#pair-ttl").value, label: $("#pair-label").value });
+    localStorage.setItem(BASE_URL_KEY, baseUrl);
+    $("#pair-label").value = "";
+    result.replaceChildren(
+      h("p", null, h("strong", null, `Pairing link for ${pairing.label}`), muted(` (single use, until ${new Date(pairing.expiresAt).toLocaleString()})`)),
+      commandLine(pairing.pairUrl),
+      h("div", { class: "actions" },
+        h("a", { class: "button", href: pairing.pairUrl, target: "_blank", rel: "noopener noreferrer" }, "Open"),
+        pairing.credential && muted(`Code ${pairing.credential}`),
+      ),
+      h("p", { class: "note" }, "Shown only now. The link is a password: open it on the device to pair, and do not paste it into chats."),
+    );
+    result.hidden = false;
+    loadAccess();
+  } catch (error) {
+    if (!(error instanceof SignedOut)) showError($("#pair-error"), error.message);
+  } finally {
+    button.disabled = false;
+  }
+});
 
 async function loadAccess() {
   try {
@@ -408,14 +590,96 @@ async function loadAccess() {
 
 // ---- Skills ----
 
-function skillList(list, withAgents) {
+// Installed skills carry their agents and a Remove button; the others are listed only.
+function skillList(list, installed) {
   if (list.length === 0) return h("p", { class: "muted" }, "None.");
-  return h("ul", { class: "list" }, list.map((skill) => h("li", null, h("div", null,
-    h("strong", null, skill.name), " ",
-    withAgents && skill.agents.map((agent) => h("span", { class: "chip" }, agent)),
-    skill.description && h("p", { class: "clamp muted", onclick: (event) => event.currentTarget.classList.toggle("open") }, skill.description),
-  ))));
+  return h("ul", { class: "list" }, list.map((skill) => h("li", null,
+    h("div", null,
+      h("strong", null, skill.name), " ",
+      installed && skill.agents.map((agent) => h("span", { class: "chip" }, agent)),
+      skill.description && h("p", { class: "clamp muted", onclick: (event) => event.currentTarget.classList.toggle("open") }, skill.description),
+    ),
+    installed && h("button", { type: "button", class: "danger", onclick: () => {
+      if (confirm(`Remove ${skill.name} from every agent?`)) startSkillsJob("api/skills/remove", { folder: skill.folder });
+    } }, "Remove"),
+  )));
 }
+
+// ---- Jobs: slow actions run on the server; the page polls each one every second until it ends ----
+
+const watching = new Set();
+
+function renderJob(job) {
+  const panel = $("#skill-job");
+  const state = job.state === "running" ? muted("running…") : job.state === "done" ? ok("done") : bad(`failed: ${job.error}`);
+  const result = job.state !== "done" || !job.result ? null
+    : job.result.action === "list" ? skillChoices(job.result)
+    : job.result.action === "install" ? job.result.installed.map((s) => h("p", null,
+        `${s.name} installed for ${s.agents.join(", ")}.`,
+        s.security && muted(` Security checks: Gen ${s.security.gen || "?"}, Socket ${s.security.socket || "?"}, Snyk ${s.security.snyk || "?"}.`)))
+    : h("p", null, `${job.result.folder} removed.`);
+  panel.replaceChildren(h("div", null,
+    h("div", null, h("strong", null, job.title), " ", state),
+    result,
+    job.lines.length > 0 && h("details", { open: job.state === "running" ? true : null }, h("summary", null, "Output"), h("pre", { class: "log" }, job.lines.join("\n"))),
+  ));
+  panel.hidden = false;
+}
+
+// A repository's skills, each with an Install button.
+function skillChoices({ source, skills }) {
+  if (skills.length === 0) return h("p", { class: "muted" }, "No skills found there.");
+  return h("ul", { class: "list" }, skills.map((skill) => h("li", null,
+    h("div", null, h("strong", null, skill.name), skill.description && h("p", { class: "clamp muted", onclick: (event) => event.currentTarget.classList.toggle("open") }, skill.description)),
+    h("button", { type: "button", onclick: () => startSkillsJob("api/skills/install", { source, skill: skill.name }) }, "Install"),
+  )));
+}
+
+async function watchJob(job) {
+  if (watching.has(job.id)) return;
+  watching.add(job.id);
+  try {
+    while (true) {
+      renderJob(job);
+      if (job.state !== "running") break;
+      await sleep(1000);
+      try {
+        job = (await api(`api/jobs/${job.id}`)).job;
+      } catch (error) {
+        if (error instanceof SignedOut) return;
+        await sleep(2000);
+      }
+    }
+    if (job.state === "done" && job.result?.action !== "list") loadSkills();
+  } finally {
+    watching.delete(job.id);
+  }
+}
+
+// Starts a skills job, or shows the one already running.
+async function startSkillsJob(path, body) {
+  showError($("#skill-error"), "");
+  try {
+    watchJob((await api(path, body)).job);
+  } catch (error) {
+    if (!(error instanceof SignedOut)) showError($("#skill-error"), error.message);
+  }
+}
+
+// After a reload: pick up a job that is still running.
+async function resumeJobs() {
+  try {
+    for (const job of (await api("api/jobs")).jobs) if (job.state === "running") watchJob(job);
+  } catch {}
+}
+
+$("#skill-list").addEventListener("click", () => startSkillsJob("api/skills/list", { source: $("#skill-source").value.trim() }));
+$("#skill-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const skill = $("#skill-name").value.trim();
+  if (!skill) return showError($("#skill-error"), "Type a skill's name, or show the repository's skills to pick one.");
+  startSkillsJob("api/skills/install", { source: $("#skill-source").value.trim(), skill });
+});
 
 async function loadSkills() {
   try {
@@ -474,6 +738,7 @@ function showBoard() {
   loadAccess();
   loadSkills();
   loadDevices();
+  resumeJobs();
 }
 
 function showSignIn() {

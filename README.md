@@ -83,19 +83,21 @@ docker restart t3codebox
 
 ## The dashboard
 
-A status page for the box, made for phones as much as for desktops. Open `https://<host>.<tailnet>.ts.net:3772` (or your proxy URL) and sign in with the dashboard password.
+A status page for the box where settings can also be changed, made for phones as much as for desktops. Open `https://<host>.<tailnet>.ts.net:3772` (or your proxy URL) and sign in with the dashboard password.
 
-- **Health**, refreshed every 5 seconds: T3 up or down, the image, T3 and provider versions, uptime, CPU and memory against the container's limits, whether the home and workspace folders are mounted (a folder that is not mounted loses its data when the container is recreated), free space, running agents and the browser. Folder sizes on request.
-- **Providers**: whether Claude Code, Codex, Cursor, Grok Build, OpenCode and GitHub are signed in, how and as whom, with the sign-in command for the ones that are not.
-- **T3 access**: paired devices with a countdown to their expiry, and unused pairing links.
-- **Skills**: the skills installed for each agent, the ones synced from claude.ai and Codex's built-in ones.
+- **Health**, refreshed every 5 seconds: T3 up or down, the image, T3 and provider versions, uptime, CPU and memory against the container's limits, whether the home and workspace folders are mounted (a folder that is not mounted loses its data when the container is recreated), free space, running agents and the browser. Folder sizes on request. **Restart T3** restarts the container, for example after `t3 connect login`; it needs a restart policy such as compose's `restart: unless-stopped`.
+- **Providers**: whether Claude Code, Codex, Cursor, Grok Build, OpenCode and GitHub are signed in, how and as whom, with the sign-in command for the ones that are not. The GitHub card sets the commit author (`git config --global user.name` and `user.email`).
+- **T3 access**: paired devices with a countdown to their expiry, and unused pairing links, each with a Revoke button. **Pair a device** creates a link for T3's address and a validity you choose; open the dashboard on the phone and tap the link there.
+- **Skills**: the skills installed for each agent, the ones synced from claude.ai and Codex's built-in ones. Add skills from a GitHub repository (`owner/repo`, for example `mattpocock/skills` or `anthropics/skills`): **Show skills** lists what it has, **Install** puts one into every agent's user skills with the [`skills`](https://www.npmjs.com/package/skills) CLI, which is in the image. **Remove** takes one out again.
 - **Dashboard devices**: every browser signed in to the dashboard, each with a Sign out button.
+
+Slow actions, such as installing a skill, keep running on the server when the phone locks or the page reloads; the page picks them up again.
 
 Whatever needs attention is red and also listed at the top, such as T3 not answering, a folder that is not mounted, Claude Code billing `ANTHROPIC_API_KEY` to the API, two sign-in methods set for one provider, or a paired device expiring within 7 days. The page shows no secrets; variables in `.env` are only checked for being set.
 
 The generated password is kept in the home volume. Read it with `docker exec t3codebox cat /home/t3codebox/.t3codebox/dashboard-password`, or ask an agent in T3 for it. Set your own with `DASHBOARD_PASSWORD`; changing the password signs every device out. A device stays signed in for a year after it last opened the dashboard, across restarts and updates.
 
-The dashboard runs next to T3 in the same container and never takes T3 down with it. `DASHBOARD=off` turns it off.
+The dashboard pairs devices and installs skills, so its password is worth as much as a shell in the container: keep it like the other secrets. It runs next to T3 in the same container and never takes T3 down with it. `DASHBOARD=off` turns it off.
 
 ## Sign in to the agents
 
@@ -221,7 +223,7 @@ make build PROVIDERS="claude codex"      # only some providers
 
 ## How releases are made
 
-- Every 15 minutes CI checks for a new stable T3 Code release. A new one is built with the newest version of every other component, on native amd64 and arm64 runners, and tested on each: non-root user, health endpoint, T3 version, every provider CLI, pairing link, state across a restart, the dashboard's sign-in and status, no sudo and no Docker socket, the browser and an agent-side connection to it. Only then are the tags moved.
+- Every 15 minutes CI checks for a new stable T3 Code release. A new one is built with the newest version of every other component, on native amd64 and arm64 runners, and tested on each: non-root user, health endpoint, T3 version, every provider CLI, pairing link, state across a restart, the dashboard's sign-in, status and settings, no sudo and no Docker socket, the browser and an agent-side connection to it. Only then are the tags moved.
 - A daily Trivy scan checks the published images. A critical finding with a fix triggers a rebuild; a high one opens an issue.
 - Every change merged to `main` goes through the same build and tests and is published as `edge` only; `latest` and the version tags wait for a release.
 - T3 Code preview and nightly builds are not followed.
