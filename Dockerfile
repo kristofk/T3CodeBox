@@ -101,12 +101,15 @@ RUN git config --system credential.https://github.com.helper '' \
 
 # User lookups go through nss_wrapper's copies of passwd and group, which the entrypoint rewrites for
 # the uid the container runs as, so `docker exec` under a custom uid has a user name too.
+# /etc/machine-info is writable the same way, for the entrypoint to set T3CODEBOX_NAME.
 RUN groupadd --gid 1000 t3codebox \
  && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/t3codebox --shell /bin/bash t3codebox \
  && install -d -o 1000 -g 1000 /workspace \
  && install -d -m 755 /etc/t3codebox \
  && install -m 666 /etc/passwd /etc/t3codebox/passwd \
- && install -m 666 /etc/group /etc/t3codebox/group
+ && install -m 666 /etc/group /etc/t3codebox/group \
+ && install -m 666 /dev/null /etc/t3codebox/machine-info \
+ && ln -s /etc/t3codebox/machine-info /etc/machine-info
 
 COPY rootfs/ /
 

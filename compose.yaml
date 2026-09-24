@@ -6,10 +6,13 @@ services:
   t3codebox:
     image: ${T3CODEBOX_IMAGE:-ghcr.io/kristofk/t3codebox}:${T3CODEBOX_TAG:-latest}
     container_name: t3codebox
+    # T3 Code clients show the environment under this name, unless T3CODEBOX_NAME is set.
+    hostname: ${T3CODEBOX_HOSTNAME:-t3codebox}
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
     environment:
       - TZ
+      - T3CODEBOX_NAME
       - BROWSER_MCP
       - T3CODE_TELEMETRY_ENABLED
       - CLAUDE_CODE_OAUTH_TOKEN
