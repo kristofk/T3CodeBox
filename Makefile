@@ -7,7 +7,7 @@ DOCKER   ?= docker
 REGISTRY ?= ghcr.io/kristofk
 export DOCKER REGISTRY T3_VERSION IMAGE_VERSION PROVIDERS REASON FORCE
 
-.PHONY: help check build test publish release scan upstream
+.PHONY: help check build test publish release edge scan upstream
 
 help: ## Show the targets
 	@grep -E '^[a-z]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -26,6 +26,9 @@ publish: ## Push this architecture's tested images by digest
 
 release: ## Combine the architectures, move the tags, publish release notes
 	ci/release.sh
+
+edge: ## Combine the architectures and move the edge tag (newest main, not released)
+	ci/edge.sh
 
 scan: ## Trivy scan of the published images
 	ci/scan.sh
