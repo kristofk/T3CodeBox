@@ -115,8 +115,13 @@ check "browser MCP server registered for the agents" in_t3 bash -c \
   'for i in $(seq 45); do jq -e .mcpServers.browser ~/.claude.json && jq -e .mcpServers.browser ~/.cursor/mcp.json && jq -e .mcp.browser ~/.config/opencode/opencode.json && grep -q "^\[mcp_servers.browser\]" ~/.codex/config.toml && grep -q "^\[mcp_servers.browser\]" ~/.grok/config.toml && exit 0; sleep 1; done; exit 1'
 check "agent-side MCP connection drives the browser, leaving nothing in the project" bash -c \
   "for i in \$(seq 30); do $DOCKER exec $b sh -c 'curl -fsS http://127.0.0.1:9222/json/version' >/dev/null 2>&1 && break; sleep 2; done; $DOCKER exec $c node -e \"\$(cat ci/mcp-probe.js)\" && $DOCKER exec $c test ! -e /workspace/.playwright-mcp"
+# Every call has a time limit: `docker exec` into a container that restarts underneath it, or a T3 that is
+# still starting, hung an arm64 run for 40 minutes without one. A failure prints the container's state.
 check "Restart T3 on the dashboard restarts the container, and T3 comes back" bash -c \
-  "before=\$($DOCKER inspect -f '{{.State.StartedAt}}' $c) && $DOCKER exec $c curl -fsS -b /tmp/dashboard-cookies -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:3772/api/restart >/dev/null \
-   && for i in \$(seq 60); do sleep 2; [ \"\$($DOCKER inspect -f '{{.State.StartedAt}}' $c)\" != \"\$before\" ] && $DOCKER exec $c curl -fsS -o /dev/null http://127.0.0.1:3773/.well-known/t3/environment 2>/dev/null && exit 0; done; exit 1"
+  "before=\$($DOCKER inspect -f '{{.State.StartedAt}}' $c) \
+   && timeout 30 $DOCKER exec $c curl -fsS --max-time 10 -b /tmp/dashboard-cookies -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:3772/api/restart >/dev/null \
+   && for i in \$(seq 60); do sleep 2; [ \"\$(timeout 10 $DOCKER inspect -f '{{.State.StartedAt}}' $c)\" != \"\$before\" ] \
+        && timeout 15 $DOCKER exec $c curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:3773/.well-known/t3/environment 2>/dev/null && exit 0; done; \
+   timeout 10 $DOCKER inspect -f 'state {{.State.Status}}, started {{.State.StartedAt}} (was \$before), restarts {{.RestartCount}}' $c; exit 1"
 
 exit "$failed"

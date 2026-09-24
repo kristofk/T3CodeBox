@@ -45,6 +45,8 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
+    # A hung test ends here, not after GitHub's default of six hours.
+    timeout-minutes: 30
     env:
       GH_TOKEN: ${{ github.token }}
       T3_VERSION: ${{ needs.check.outputs.t3_version }}
