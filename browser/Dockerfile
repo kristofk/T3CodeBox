@@ -12,6 +12,10 @@ LABEL org.opencontainers.image.title="T3CodeBox browser" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.version="${IMAGE_VERSION}"
 
+# Browser tab and sidebar titles, through linuxserver's own settings; the browser service can override them.
+ENV TITLE="T3CodeBox browser" \
+    SELKIES_UI_TITLE="T3CodeBox browser"
+
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
 # Upgrade: Debian's security fixes (Chromium included) reach the image with every build, not only
