@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="Icon/final/dark/t3codebox-48.svg">
+  <img src="Icon/final/light/t3codebox-48.svg" alt="T3CodeBox icon" width="96" height="96">
+</picture>
+
 # T3CodeBox
 
 [![Release build](https://github.com/kristofk/T3CodeBox/actions/workflows/release.yml/badge.svg)](https://github.com/kristofk/T3CodeBox/actions/workflows/release.yml)
