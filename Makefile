@@ -12,7 +12,7 @@ export DOCKER REGISTRY T3_VERSION IMAGE_VERSION PROVIDERS REASON FORCE
 help: ## Show the targets
 	@grep -E '^[a-z]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-10s %s\n", $$1, $$2}'
 
-check: ## Lint scripts, Dockerfiles and compose.yaml
+check: ## Lint scripts, Dockerfiles and compose.yaml; unit-test the dashboard
 	ci/check.sh
 
 build: ## Build both images for this machine's architecture

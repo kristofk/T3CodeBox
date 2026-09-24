@@ -22,7 +22,7 @@ Unofficial: not affiliated with T3 Code or Ping.
 
 | | |
 | --- | --- |
-| `ghcr.io/kristofk/t3codebox` | `t3 serve` from the official T3 Code release, with Claude Code, Codex, Cursor, Grok Build and OpenCode, `gh`, `git`, `ssh`, `ripgrep`, Node LTS and Python. Runs as a non-root user and needs no Docker socket. |
+| `ghcr.io/kristofk/t3codebox` | `t3 serve` from the official T3 Code release, with Claude Code, Codex, Cursor, Grok Build and OpenCode, `gh`, `git`, `ssh`, `ripgrep`, Node LTS and Python, plus a dashboard that shows the box's health and sign-ins. Runs as a non-root user and needs no Docker socket. |
 | `ghcr.io/kristofk/t3codebox-browser` | Chromium on a remote desktop you open in any browser ([linuxserver/chromium](https://docs.linuxserver.io/images/docker-chromium/)), password protected. All five agents get a `browser` tool (Playwright MCP) that drives it. |
 
 Both images support amd64 and arm64. A new build is released automatically when T3 Code publishes a stable release, and only after both architectures pass the tests.
@@ -36,23 +36,25 @@ curl -fsSL -o .env https://raw.githubusercontent.com/kristofk/T3CodeBox/main/.en
 docker compose up -d
 ```
 
-T3 Code now listens on `127.0.0.1:3773` and the browser's remote desktop on `127.0.0.1:3774`. Both are bound to loopback: put HTTPS in front (next section) before you use them from another device.
+T3 Code now listens on `127.0.0.1:3773`, the browser's remote desktop on `127.0.0.1:3774` and the dashboard on `127.0.0.1:3772`. All are bound to loopback: put HTTPS in front (next section) before you use them from another device.
 
-The browser password is printed once in the logs:
+The browser and dashboard passwords are printed once in the logs:
 
 ```sh
 docker logs t3codebox-browser | grep password
+docker logs t3codebox | grep 'dashboard password'
 ```
 
 ## Connect
 
 ### Tailscale (recommended)
 
-Serve both ports on your tailnet with real HTTPS from the host's Tailscale:
+Serve the ports on your tailnet with real HTTPS from the host's Tailscale:
 
 ```sh
 tailscale serve --bg --https=3773 http://127.0.0.1:3773
 tailscale serve --bg --https=3774 http://127.0.0.1:3774
+tailscale serve --bg --https=3772 http://127.0.0.1:3772
 ```
 
 Then create a pairing link for your server's tailnet name and open it on the device you want to connect (desktop app, web app or phone):
@@ -61,7 +63,7 @@ Then create a pairing link for your server's tailnet name and open it on the dev
 docker exec t3codebox t3 auth pairing create --base-url https://<host>.<tailnet>.ts.net:3773 --ttl 30d
 ```
 
-A pairing link is a password: do not paste it into chats or logs. List and revoke links with `docker exec t3codebox t3 auth pairing list` and `t3 auth pairing revoke <id>`; paired devices stay signed in across restarts and updates.
+A pairing link is a password: do not paste it into chats or logs. List and revoke links with `docker exec t3codebox t3 auth pairing list` and `t3 auth pairing revoke <id>`. Paired devices stay signed in across restarts and updates until 30 days after pairing; then pair them again. The dashboard counts down to each device's expiry.
 
 The desktop app also connects over plain HTTP inside a tailnet; the web app, and the browser's clipboard, need HTTPS.
 
@@ -76,8 +78,24 @@ docker restart t3codebox
 
 ### LAN or reverse proxy
 
-- **Reverse proxy** (Caddy, Traefik, nginx, Nginx Proxy Manager): proxy HTTPS to `127.0.0.1:3773` and `127.0.0.1:3774` with WebSocket support, and use the proxy's URL as `--base-url`.
+- **Reverse proxy** (Caddy, Traefik, nginx, Nginx Proxy Manager): proxy HTTPS to `127.0.0.1:3773`, `127.0.0.1:3774` and `127.0.0.1:3772` with WebSocket support, and use the proxy's URL as `--base-url`.
 - **LAN without TLS**: publish on all interfaces by editing the `ports:` lines in `compose.yaml` (`"3773:3773"`). The browser also serves self-signed HTTPS on its port 3001 (`"3775:3001"`); use that one from phones, because the desktop's session cookie needs HTTPS and iOS Safari needs the cookie.
+
+## The dashboard
+
+A status page for the box, made for phones as much as for desktops. Open `https://<host>.<tailnet>.ts.net:3772` (or your proxy URL) and sign in with the dashboard password.
+
+- **Health**, refreshed every 5 seconds: T3 up or down, the image, T3 and provider versions, uptime, CPU and memory against the container's limits, whether the home and workspace folders are mounted (a folder that is not mounted loses its data when the container is recreated), free space, running agents and the browser. Folder sizes on request.
+- **Providers**: whether Claude Code, Codex, Cursor, Grok Build, OpenCode and GitHub are signed in, how and as whom, with the sign-in command for the ones that are not.
+- **T3 access**: paired devices with a countdown to their expiry, and unused pairing links.
+- **Skills**: the skills installed for each agent, the ones synced from claude.ai and Codex's built-in ones.
+- **Dashboard devices**: every browser signed in to the dashboard, each with a Sign out button.
+
+Whatever needs attention is red and also listed at the top, such as T3 not answering, a folder that is not mounted, Claude Code billing `ANTHROPIC_API_KEY` to the API, two sign-in methods set for one provider, or a paired device expiring within 7 days. The page shows no secrets; variables in `.env` are only checked for being set.
+
+The generated password is kept in the home volume. Read it with `docker exec t3codebox cat /home/t3codebox/.t3codebox/dashboard-password`, or ask an agent in T3 for it. Set your own with `DASHBOARD_PASSWORD`; changing the password signs every device out. A device stays signed in for a year after it last opened the dashboard, across restarts and updates.
+
+The dashboard runs next to T3 in the same container and never takes T3 down with it. `DASHBOARD=off` turns it off.
 
 ## Sign in to the agents
 
@@ -88,11 +106,11 @@ Each provider signs in the way its own CLI does; T3 passes the container environ
 | Claude Code | `docker exec -it t3codebox claude auth login` | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY` |
 | Codex | `docker exec -it t3codebox codex login --device-auth` (turn on device code sign-in in ChatGPT's security settings first) | `OPENAI_API_KEY` |
 | Cursor | | `CURSOR_API_KEY` |
-| Grok Build | | `XAI_API_KEY` |
+| Grok Build | `docker exec -it t3codebox grok login --device-auth` | `XAI_API_KEY` |
 | OpenCode | `docker exec -it t3codebox opencode auth login` | the provider's usual variable |
 | GitHub (`gh`, pull requests, `git push`) | `docker exec -it t3codebox gh auth login` | `GH_TOKEN` |
 
-Use one method per provider. Claude Code in particular prefers `ANTHROPIC_API_KEY` over a subscription login and bills the API without asking; check what it uses with `docker exec t3codebox claude auth status` or on T3's provider card. For several accounts of one provider, add provider instances in T3's settings.
+Use one method per provider. Claude Code in particular prefers `ANTHROPIC_API_KEY` over a subscription login and bills the API without asking; check what it uses on the dashboard, with `docker exec t3codebox claude auth status` or on T3's provider card. For several accounts of one provider, add provider instances in T3's settings.
 
 Turn on the providers you use in T3's Settings → Providers; the others do nothing.
 
@@ -142,6 +160,9 @@ All in `.env` (see [`.env.example`](.env.example)):
 | `BROWSER_PORT` | `3774` | Host port of the remote desktop (on 127.0.0.1) |
 | `BROWSER_PASSWORD` | generated | Remote desktop password, user `abc` |
 | `BROWSER_MCP` | on | `off`: agents get no browser tool |
+| `DASHBOARD_PORT` | `3772` | Host port of the dashboard (on 127.0.0.1) |
+| `DASHBOARD_PASSWORD` | generated | Dashboard password |
+| `DASHBOARD` | on | `off`: no dashboard |
 | `T3CODE_TELEMETRY_ENABLED` | T3's default | `false` turns off T3's anonymous telemetry |
 
 Memory limit: uncomment `mem_limit` in `compose.yaml`. T3's own `T3CODE_*` variables work too; add them to the `environment:` list.
@@ -150,7 +171,7 @@ Memory limit: uncomment `mem_limit` in `compose.yaml`. T3's own `T3CODE_*` varia
 
 | Volume | Path | Holds |
 | --- | --- | --- |
-| `t3codebox-home` | `/home/t3codebox` | T3's state (`~/.t3`: threads, settings, paired devices), every provider login, `gh`, git config, SSH keys |
+| `t3codebox-home` | `/home/t3codebox` | T3's state (`~/.t3`: threads, settings, paired devices), every provider login, `gh`, git config, SSH keys, the dashboard password and signed-in devices (`~/.t3codebox`) |
 | `t3codebox-workspace` | `/workspace` | Your repositories. The path is fixed: T3 stores projects by absolute path |
 | `t3codebox-browser` | `/config` in the browser | Chromium profile, cookies, the browser password |
 
@@ -199,13 +220,13 @@ make build PROVIDERS="claude codex"      # only some providers
 
 ## How releases are made
 
-- Every 15 minutes CI checks for a new stable T3 Code release. A new one is built with the newest version of every other component, on native amd64 and arm64 runners, and tested on each: non-root user, health endpoint, T3 version, every provider CLI, pairing link, state across a restart, no sudo and no Docker socket, the browser and an agent-side connection to it. Only then are the tags moved.
+- Every 15 minutes CI checks for a new stable T3 Code release. A new one is built with the newest version of every other component, on native amd64 and arm64 runners, and tested on each: non-root user, health endpoint, T3 version, every provider CLI, pairing link, state across a restart, the dashboard's sign-in and status, no sudo and no Docker socket, the browser and an agent-side connection to it. Only then are the tags moved.
 - A daily Trivy scan checks the published images. A critical finding with a fix triggers a rebuild; a high one opens an issue.
 - T3 Code preview and nightly builds are not followed.
 
 ## Icon
 
-The icon is in [`Icon/`](Icon): SVGs for light and dark backgrounds and PNGs. For a dashboard such as Homepage, Homarr, Dashy or Unraid, use `https://raw.githubusercontent.com/kristofk/T3CodeBox/main/Icon/final/png/t3codebox-512.png`.
+The icon is in [`Icon/`](Icon): SVGs for light and dark backgrounds and PNGs. For a start page such as Homepage, Homarr, Dashy or Unraid, use `https://raw.githubusercontent.com/kristofk/T3CodeBox/main/Icon/final/png/t3codebox-512.png`.
 
 ## Licence
 

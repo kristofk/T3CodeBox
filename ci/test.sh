@@ -32,8 +32,8 @@ check() {
 
 cleanup() {
   if [ "$failed" = 1 ]; then
-    # Without the startup banner: it prints a short-lived pairing token.
-    compose logs --no-color --tail 60 t3codebox 2>&1 | grep -vE 'Token:|Pairing URL|[█▀▄]' >&2 || true
+    # Without the startup banner (it prints a short-lived pairing token) and the dashboard password.
+    compose logs --no-color --tail 60 t3codebox 2>&1 | grep -vE 'Token:|Pairing URL|[█▀▄]|dashboard password' >&2 || true
   fi
   compose down -v --remove-orphans >/dev/null 2>&1 || true
 }
@@ -73,6 +73,17 @@ check "pairing link minted with --base-url" bash -c \
   "$DOCKER exec $c t3 auth pairing create --base-url https://t3codebox.test --ttl 10m --label t3codebox-test --json | grep -q 'https://t3codebox.test'"
 check "state survives a restart" bash -c \
   "$DOCKER restart $c >/dev/null && sleep 2 && for i in \$(seq 60); do $DOCKER exec $c t3 auth pairing list --json 2>/dev/null | grep -q t3codebox-test && exit 0; sleep 2; done; exit 1"
+check "dashboard answers on 3772 and refuses requests without a session" bash -c \
+  "for i in \$(seq 30); do [ \"\$($DOCKER exec $c curl -s -o /dev/null -w %{http_code} http://127.0.0.1:3772/api/status)\" = 401 ] && exit 0; sleep 2; done; exit 1"
+check "dashboard signs in with its generated password" in_t3 bash -c \
+  'jq -n --arg p "$(cat ~/.t3codebox/dashboard-password)" "{password: \$p}" | curl -fsS -c /tmp/dashboard-cookies -H "Content-Type: application/json" -d @- http://127.0.0.1:3772/api/sign-in'
+check "dashboard status: T3 up, both volumes mounted, memory in use" in_t3 bash -c \
+  'for i in $(seq 30); do curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/status | jq -e ".t3.up and .mounts.home.kind == \"volume\" and .mounts.workspace.kind == \"volume\" and .memory.used > 0" && exit 0; sleep 2; done; exit 1'
+check "dashboard lists every provider with its version, and the pairing link" in_t3 bash -c \
+  'curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/providers | jq -e "[.providers[] | select(.installed and .version != null)] | length == 6" \
+   && curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/access | jq -e "any(.pairings[]; .label == \"t3codebox-test\")"'
+check "claude auth status names ANTHROPIC_API_KEY (the dashboard's billing warning)" in_t3 bash -c \
+  'ANTHROPIC_API_KEY=sk-ant-t3codebox-test claude auth status --json | jq -e ".apiKeySource == \"ANTHROPIC_API_KEY\""'
 check "no sudo and no Docker socket" in_t3 bash -c '! command -v sudo && [ ! -e /var/run/docker.sock ]'
 check "custom uid has a user name, in docker exec too" bash -c \
   "$DOCKER rm -f t3codebox-test-uid >/dev/null 2>&1; $DOCKER run -d --name t3codebox-test-uid --user 4242:4242 $LOCAL_IMAGE sleep infinity >/dev/null && sleep 2 \
