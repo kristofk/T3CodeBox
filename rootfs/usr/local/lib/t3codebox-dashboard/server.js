@@ -555,18 +555,27 @@ function httpGet(options) {
   });
 }
 
-// CLI versions, read once: the image is the only way they change.
+// CLI versions, read once each: the image is the only way they change. An installed CLI that gave no
+// version (a slow first start) is asked again on a later call, at most every 30 s, without making that
+// call wait. `check(command)` returns { installed, version }.
 const CLIS = { t3: "t3", claude: "claude", codex: "codex", cursor: "cursor-agent", grok: "grok", opencode: "opencode", gh: "gh" };
-let clis = null;
-function cliVersions() {
-  clis ||= Promise.all(
-    Object.entries(CLIS).map(async ([id, command]) => {
-      const result = await run(command, ["--version"], 15_000);
-      return [id, { installed: !result.missing, version: parseVersion(result.stdout || result.stderr) }];
-    }),
-  ).then(Object.fromEntries);
-  return clis;
+function versionCache(check, now = () => performance.now()) {
+  const versions = {};
+  let running = null;
+  let lastRun = -Infinity;
+  return () => {
+    const due = Object.keys(CLIS).filter((id) => !versions[id] || (versions[id].installed && !versions[id].version));
+    if (due.length && !running && now() - lastRun >= 30_000) {
+      lastRun = now();
+      running = Promise.all(due.map(async (id) => (versions[id] = await check(CLIS[id])))).finally(() => (running = null));
+    }
+    return Object.keys(CLIS).every((id) => versions[id]) ? Promise.resolve(versions) : running.then(() => versions);
+  };
 }
+const cliVersions = versionCache(async (command) => {
+  const result = await run(command, ["--version"], 15_000);
+  return { installed: !result.missing, version: parseVersion(result.stdout || result.stderr) };
+});
 
 let cpuSample = null;
 function readCpu() {
@@ -771,6 +780,7 @@ const sendJson = (response, status, data, headers = {}) =>
 // SameSite=Strict cookie keeps other sites from acting on the dashboard.
 async function readJson(request) {
   if (!String(request.headers["content-type"] ?? "").startsWith("application/json")) return null;
+  request.setEncoding("utf8");
   let body = "";
   for await (const chunk of request) {
     body += chunk;
@@ -875,7 +885,7 @@ function main() {
 module.exports = {
   parseVersion, parseMountinfo, describeMount, parseKeyValues, parseMemory, parseCpuMax, parseProcStat, containerUptime,
   agentOf, countAgents, parseClaudeStatus, parseCodexStatus, parseCursorStatus, parseOpencodeAuth, parseGhStatus,
-  parseT3Sessions, parseT3Pairings, parseSkillFrontmatter, parseDu, userAgentLabel,
+  parseT3Sessions, parseT3Pairings, parseSkillFrontmatter, parseDu, userAgentLabel, versionCache,
   claudeCard, codexCard, cursorCard, grokCard, opencodeCard, githubCard,
   passwordMatches, loadPassword, SessionStore,
 };

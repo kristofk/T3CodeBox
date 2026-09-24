@@ -386,6 +386,36 @@ description: Create new skills, modify and improve existing skills, and measure 
   });
 });
 
+describe("CLI versions", () => {
+  test("read once each; one that gave no version is asked again after 30 s, without waiting for it", async () => {
+    let clock = 0;
+    let answerT3;
+    const t3Answer = new Promise((resolve) => (answerT3 = resolve));
+    const asked = [];
+    const versions = d.versionCache(async (command) => {
+      asked.push(command);
+      if (command === "t3") return asked.filter((c) => c === "t3").length === 1 ? { installed: true, version: null } : t3Answer;
+      return command === "grok" ? { installed: false, version: null } : { installed: true, version: "1.0.0" };
+    }, () => clock);
+    const first = await versions();
+    assert.equal(asked.length, 7);
+    assert.equal(first.t3.version, null);
+    assert.equal(first.claude.version, "1.0.0");
+    clock = 10_000;
+    await versions();
+    assert.equal(asked.length, 7);
+    clock = 40_000;
+    assert.equal((await versions()).t3.version, null);
+    assert.deepEqual(asked.slice(7), ["t3"]);
+    answerT3({ installed: true, version: "0.0.42" });
+    await new Promise(setImmediate);
+    assert.equal((await versions()).t3.version, "0.0.42");
+    clock = 100_000;
+    await versions();
+    assert.equal(asked.length, 8);
+  });
+});
+
 describe("small parsers", () => {
   test("du -sk", () => {
     assert.deepEqual(d.parseDu("4200\t/home/t3codebox\n120\t/workspace\n"), { "/home/t3codebox": 4200 * 1024, "/workspace": 120 * 1024 });

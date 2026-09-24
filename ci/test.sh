@@ -80,7 +80,8 @@ check "dashboard signs in with its generated password" in_t3 bash -c \
 check "dashboard status: T3 up, both volumes mounted, memory in use" in_t3 bash -c \
   'for i in $(seq 30); do curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/status | jq -e ".t3.up and .mounts.home.kind == \"volume\" and .mounts.workspace.kind == \"volume\" and .memory.used > 0" && exit 0; sleep 2; done; exit 1'
 check "dashboard lists every provider with its version, and the pairing link" in_t3 bash -c \
-  'curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/providers | jq -e "[.providers[] | select(.installed and .version != null)] | length == 6" \
+  'for i in $(seq 30); do curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/providers | jq -e "[.providers[] | select(.installed and .version != null)] | length == 6" && break; sleep 2; done \
+   && curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/providers | jq -e "[.providers[] | select(.installed and .version != null)] | length == 6" \
    && curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/access | jq -e "any(.pairings[]; .label == \"t3codebox-test\")"'
 check "claude auth status names ANTHROPIC_API_KEY (the dashboard's billing warning)" in_t3 bash -c \
   'ANTHROPIC_API_KEY=sk-ant-t3codebox-test claude auth status --json | jq -e ".apiKeySource == \"ANTHROPIC_API_KEY\""'
