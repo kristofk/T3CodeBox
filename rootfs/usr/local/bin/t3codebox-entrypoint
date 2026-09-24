@@ -13,6 +13,13 @@ if ! { printf '%s\n' "$passwd" > "$NSS_WRAPPER_PASSWD" && printf '%s\n' "$group"
   echo "t3codebox: warning: could not write $NSS_WRAPPER_PASSWD; uid $uid may have no user name" >&2
 fi
 
+# T3 Code names the environment after PRETTY_HOSTNAME in /etc/machine-info, else the hostname.
+name=${T3CODEBOX_NAME:-}
+name=${name//[$'\r\n']/}
+if ! { if [ -n "$name" ]; then printf 'PRETTY_HOSTNAME="%s"\n' "$name"; fi > /etc/machine-info; } 2>/dev/null; then
+  echo "t3codebox: warning: could not write /etc/machine-info; T3CODEBOX_NAME is ignored" >&2
+fi
+
 for dir in "$HOME" /workspace; do
   if [ ! -w "$dir" ]; then
     echo "t3codebox: warning: $dir is not writable by uid $(id -u); give the mounted folder to $(id -u):$(id -g)" >&2

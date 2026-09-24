@@ -136,6 +136,8 @@ All in `.env` (see [`.env.example`](.env.example)):
 | `T3CODEBOX_TAG` | `latest` | Image tag for both images |
 | `PUID`, `PGID` | `1000` | User and group of both containers |
 | `TZ` | `Etc/UTC` | Time zone |
+| `T3CODEBOX_HOSTNAME` | `t3codebox` | Container hostname, and the environment name in T3 Code clients |
+| `T3CODEBOX_NAME` | unset | Environment name with spaces or capitals (`Kris's NAS`); wins over the hostname |
 | `T3CODE_PORT` | `3773` | Host port of T3 Code (on 127.0.0.1) |
 | `BROWSER_PORT` | `3774` | Host port of the remote desktop (on 127.0.0.1) |
 | `BROWSER_PASSWORD` | generated | Remote desktop password, user `abc` |

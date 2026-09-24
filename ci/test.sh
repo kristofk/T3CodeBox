@@ -10,7 +10,7 @@ versions="$OUT/versions-$a.txt"
 : > "$results"
 : > "$versions"
 
-export COMPOSE_PROFILES=browser
+export COMPOSE_PROFILES=browser T3CODEBOX_NAME="T3CodeBox test's box"
 export T3CODEBOX_IMAGE=${LOCAL_IMAGE%:*} T3CODEBOX_BROWSER_IMAGE=${LOCAL_BROWSER_IMAGE%:*} T3CODEBOX_TAG=${LOCAL_IMAGE##*:}
 compose() { $DOCKER compose --env-file /dev/null -f compose.yaml -f ci/test.compose.yaml "$@"; }
 c=t3codebox-test
@@ -52,6 +52,9 @@ compose up -d
 
 check "container runs as non-root (uid 1000)" bash -c "[ \"\$($DOCKER exec $c id -u)\" = 1000 ]"
 check "health endpoint answers" wait_healthy
+check "hostname is t3codebox, not the container id" bash -c "[ \"\$($DOCKER exec $c hostname)\" = t3codebox ]"
+check "environment label is T3CODEBOX_NAME" bash -c \
+  "$DOCKER exec $c curl -fsS http://127.0.0.1:3773/.well-known/t3/environment | jq -e --arg name \"\$T3CODEBOX_NAME\" '.label == \$name'"
 check "t3 --version is $version" bash -c "$DOCKER exec $c t3 --version | grep -q 'v$version\$'"
 
 for tool in claude codex cursor-agent grok opencode gh node; do
