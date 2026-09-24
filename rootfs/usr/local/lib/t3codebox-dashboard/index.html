@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>T3CodeBox</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+:root {
+  --bg: #f6f8fa; --card: #ffffff; --text: #1f2328; --muted: #59636e; --border: #d1d9e0;
+  --ok: #057b32; --bad: #cf222e; --bad-bg: #ffebe9; --accent: #2365d1; --code: #eff2f5;
+  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --card: #151b23; --text: #f0f6fc; --muted: #9198a1; --border: #3d444d;
+    --ok: #3fb950; --bad: #f85149; --bad-bg: #2d1316; --accent: #4487f6; --code: #212830;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+.top { display: flex; align-items: center; gap: .6rem; max-width: 52rem; margin: 0 auto; padding: 1rem 1rem 0; }
+.top h1 { font-size: 1.35rem; margin: 0; }
+main { max-width: 52rem; margin: 0 auto; padding: 0 1rem 3rem; }
+section { margin-top: 1.5rem; }
+h2 { font-size: 1.1rem; margin: 0 0 .6rem; display: flex; align-items: center; gap: .6rem; }
+h3 { font-size: 1rem; margin: 0 0 .2rem; }
+.panel h3:not(:first-child) { margin-top: 1rem; }
+.panel { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: .75rem 1rem; }
+dl { margin: 0; }
+dl > div { padding: .45rem 0; border-top: 1px solid var(--border); }
+dl > div:first-child { border-top: 0; }
+dt { color: var(--muted); font-size: .85rem; }
+dd { margin: 0; overflow-wrap: anywhere; }
+@media (min-width: 600px) {
+  dl > div { display: grid; grid-template-columns: 8.5rem 1fr; gap: 1rem; }
+  dt { font-size: inherit; }
+}
+.muted { color: var(--muted); }
+.ok { color: var(--ok); }
+.bad { color: var(--bad); font-weight: 600; }
+.cards { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); }
+.card header { display: flex; justify-content: space-between; align-items: baseline; gap: .5rem; margin-bottom: .3rem; }
+.card h3 { margin: 0; }
+.card p { margin: .2rem 0; overflow-wrap: anywhere; }
+.badge { font-size: .8rem; font-weight: 400; padding: 0 .5rem; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; margin-left: .4rem; }
+.warnings { margin: .4rem 0 0; padding-left: 1.1rem; color: var(--bad); font-weight: 600; }
+.command { display: flex; gap: .4rem; align-items: center; margin-top: .5rem; }
+code { font: .85rem ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code); border-radius: 5px; padding: .1rem .3rem; overflow-wrap: anywhere; }
+.command code { flex: 1; padding: .35rem .5rem; }
+button { font: inherit; font-size: .9rem; color: var(--accent); background: transparent; border: 1px solid var(--border); border-radius: 7px; padding: .25rem .7rem; cursor: pointer; }
+button:disabled { color: var(--muted); cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; padding: .45rem .7rem; }
+#banner { background: var(--bad-bg); border: 1px solid var(--bad); border-radius: 10px; padding: .6rem 1rem; margin-top: 1rem; color: var(--bad); }
+#banner ul { margin: .3rem 0 0; padding-left: 1.1rem; }
+ul.list { list-style: none; margin: 0; padding: 0; }
+ul.list > li { padding: .55rem 0; border-top: 1px solid var(--border); display: flex; justify-content: space-between; gap: .75rem; align-items: center; }
+ul.list > li:first-child { border-top: 0; }
+.chip { display: inline-block; font-size: .75rem; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 .45rem; margin: 0 .1rem .1rem 0; }
+.clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; margin: .15rem 0 0; }
+.clamp.open { display: block; }
+details { margin-top: .75rem; }
+summary { cursor: pointer; color: var(--accent); }
+form { display: grid; gap: .6rem; max-width: 22rem; }
+input { font: inherit; padding: .5rem .6rem; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); }
+.offscreen { position: absolute; left: -9999px; }
+.note { font-size: .85rem; color: var(--muted); margin: .6rem 0 0; }
+</style>
+</head>
+<body>
+<header class="top"><img src="icon.svg" alt="" width="36" height="36"><h1>T3CodeBox</h1></header>
+<main>
+  <section id="sign-in" hidden>
+    <div class="panel">
+      <form id="sign-in-form">
+        <h2>Sign in</h2>
+        <input class="offscreen" name="username" autocomplete="username" value="t3codebox" tabindex="-1" aria-hidden="true">
+        <label for="password">Dashboard password</label>
+        <input id="password" type="password" autocomplete="current-password" required>
+        <button class="primary" type="submit">Sign in</button>
+        <p id="sign-in-error" class="bad" hidden></p>
+        <p class="note">DASHBOARD_PASSWORD from .env, or the one printed in <code>docker logs t3codebox</code> on first start.</p>
+      </form>
+    </div>
+  </section>
+  <div id="board" hidden>
+    <div id="banner" role="alert" hidden><strong>Needs attention</strong><ul></ul></div>
+    <section>
+      <h2>Health</h2>
+      <div class="panel">
+        <dl id="health"></dl>
+        <p class="note">Folder sizes: <span id="sizes">not calculated</span> <button id="sizes-button" type="button">Calculate</button></p>
+      </div>
+    </section>
+    <section>
+      <h2>Providers <button id="providers-refresh" type="button">Refresh</button></h2>
+      <div id="providers" class="cards"><p class="muted">Loading…</p></div>
+    </section>
+    <section>
+      <h2>T3 access</h2>
+      <div id="access" class="panel"><p class="muted">Loading…</p></div>
+    </section>
+    <section>
+      <h2>Skills</h2>
+      <div id="skills" class="panel"><p class="muted">Loading…</p></div>
+    </section>
+    <section>
+      <h2>Dashboard devices</h2>
+      <div id="devices" class="panel"><p class="muted">Loading…</p></div>
+    </section>
+  </div>
+</main>
+<script>
+"use strict";
+// Everything shown comes from CLIs, repositories and user agents: it goes in as text, never as HTML.
+
+const $ = (selector) => document.querySelector(selector);
+const NAMES = { t3: "T3", claude: "Claude Code", codex: "Codex", cursor: "Cursor", grok: "Grok Build", opencode: "OpenCode", gh: "gh", node: "Node" };
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function h(tag, props, ...children) {
+  const element = document.createElement(tag);
+  for (const [key, value] of Object.entries(props || {})) {
+    if (value === null || value === undefined || value === false) continue;
+    if (key === "class") element.className = value;
+    else if (key.startsWith("on")) element.addEventListener(key.slice(2), value);
+    else element.setAttribute(key, value === true ? "" : value);
+  }
+  for (const child of children.flat(Infinity)) {
+    if (child !== null && child !== undefined && child !== false && child !== "") element.append(child instanceof Node ? child : String(child));
+  }
+  return element;
+}
+
+const ok = (text) => h("span", { class: "ok" }, text);
+const bad = (text) => h("span", { class: "bad" }, text);
+const muted = (text) => h("span", { class: "muted" }, text);
+const row = (label, ...value) => h("div", null, h("dt", null, label), h("dd", null, ...value));
+const failed = (error) => h("p", { class: "bad" }, `Could not load: ${error.message}`);
+
+function bytes(n) {
+  if (n === null || n === undefined) return "unknown";
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let i = 0;
+  while (n >= 1000 && i < units.length - 1) {
+    n /= 1000;
+    i += 1;
+  }
+  return `${n >= 100 || i === 0 ? Math.round(n) : n.toFixed(1)} ${units[i]}`;
+}
+
+function duration(seconds) {
+  if (seconds === null || seconds === undefined) return "unknown";
+  const s = Math.max(0, Math.floor(seconds));
+  const [d, hours, m] = [Math.floor(s / 86400), Math.floor((s % 86400) / 3600), Math.floor((s % 3600) / 60)];
+  if (d) return `${d} d ${hours} h`;
+  if (hours) return `${hours} h ${m} min`;
+  return m ? `${m} min` : `${s} s`;
+}
+
+const ago = (time) => {
+  if (!time) return "never";
+  const seconds = (Date.now() - new Date(time).getTime()) / 1000;
+  return seconds < 60 ? "just now" : `${duration(seconds)} ago`;
+};
+
+function countdown(ms) {
+  const s = Math.floor(ms / 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  const days = Math.floor(s / 86400);
+  return `${days ? `${days} d ` : ""}${Math.floor((s % 86400) / 3600)} h ${pad(Math.floor((s % 3600) / 60))} min ${pad(s % 60)} s`;
+}
+
+class SignedOut extends Error {}
+
+async function api(path, body) {
+  const options = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  const response = await fetch(path, options);
+  if (response.status === 401) {
+    showSignIn();
+    throw new SignedOut();
+  }
+  if (!response.ok) throw new Error(`the dashboard answered ${response.status}`);
+  return response.status === 204 ? null : response.json();
+}
+
+// Anything red, from every section, listed at the top.
+const reds = {};
+function setReds(section, list) {
+  reds[section] = list;
+  const all = Object.values(reds).flat();
+  $("#banner").hidden = all.length === 0;
+  $("#banner ul").replaceChildren(...all.map((text) => h("li", null, text)));
+}
+
+// ---- Health: every 5 s while the tab is visible ----
+
+function renderHealth(s) {
+  const red = [];
+  const rows = [];
+  rows.push(row("T3", s.t3.up ? ok(`Running${s.t3.version ? `, v${s.t3.version}` : ""}`) : bad("Not answering")));
+  if (!s.t3.up) red.push("T3 is not answering.");
+  rows.push(row("Image", s.image || "unknown"));
+  rows.push(row("Uptime", `container ${duration(s.uptime.container)}, host ${duration(s.uptime.host)}`));
+
+  if (s.cpu) {
+    const cores = s.cpu.limit || s.host.cores;
+    const share = `${Math.round((s.cpu.used / cores) * 100)}%`;
+    rows.push(row("CPU", s.cpu.limit ? `${share} of the ${s.cpu.limit}-core limit` : `${share} of ${s.host.cores} host cores (no limit)`));
+  } else {
+    rows.push(row("CPU", muted("unknown")));
+  }
+  rows.push(row("Load", `${s.host.load.map((n) => n.toFixed(2)).join(" ")} (host, ${s.host.cores} cores)`));
+  if (s.memory) {
+    rows.push(row("Memory", s.memory.limit ? `${bytes(s.memory.used)} of the ${bytes(s.memory.limit)} limit` : `${bytes(s.memory.used)}, no limit (host has ${bytes(s.host.memory)})`));
+  } else {
+    rows.push(row("Memory", muted("unknown")));
+  }
+
+  for (const [key, label] of [["home", "Home"], ["workspace", "Workspace"]]) {
+    const m = s.mounts[key];
+    if (m.kind === "none" || m.kind === "tmpfs") {
+      const text = m.kind === "none"
+        ? `${m.path} is not mounted: its data is lost when the container is recreated.`
+        : `${m.path} is in memory (tmpfs): its data is lost when the container stops.`;
+      red.push(text);
+      rows.push(row(label, bad(text)));
+      continue;
+    }
+    const what = m.kind === "volume" ? `volume ${m.volume}` : `bind mount of ${m.root} on ${m.source} (${m.fsType})`;
+    if (!m.writable) red.push(`${m.path} is not writable.`);
+    rows.push(row(label, `${m.path}: ${what}, `, m.writable ? "writable" : bad("not writable"), m.free !== null ? `, ${bytes(m.free)} free of ${bytes(m.total)}` : ""));
+  }
+
+  const running = Object.entries(s.agents).filter(([, n]) => n > 0).map(([id, n]) => `${NAMES[id]} ${n}`);
+  rows.push(row("Agents running", running.length ? running.join(", ") : muted("none")));
+
+  const b = s.browser;
+  const tool = `, browser tool ${b.tool ? "on" : "off"}`;
+  if (!b.container) {
+    rows.push(row("Browser", muted("No browser container"), tool));
+  } else if (b.devtools) {
+    rows.push(row("Browser", ok("DevTools reachable"), b.version ? `, ${b.version.replace("/", " ")}` : "", tool));
+  } else {
+    rows.push(row("Browser", bad("DevTools not reachable"), tool));
+    if (b.tool) red.push("The browser's DevTools port is not reachable: the agents cannot drive the browser.");
+  }
+
+  rows.push(row("Versions", Object.entries(s.versions).filter(([, v]) => v).map(([id, v]) => `${NAMES[id]} ${v}`).join(", ")));
+  $("#health").replaceChildren(...rows);
+  setReds("health", red);
+}
+
+let healthTimer = null;
+let boardShown = false;
+
+async function loadHealth() {
+  clearTimeout(healthTimer);
+  try {
+    renderHealth(await api("api/status"));
+    if (!boardShown) showBoard();
+  } catch (error) {
+    if (error instanceof SignedOut) return;
+    if (!boardShown) showBoard();
+    setReds("health", [`Could not load the status: ${error.message}.`]);
+  }
+  if (document.visibilityState === "visible") healthTimer = setTimeout(loadHealth, 5000);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && boardShown) loadHealth();
+  else clearTimeout(healthTimer);
+});
+
+$("#sizes-button").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  $("#sizes").textContent = "calculating…";
+  try {
+    const sizes = await api("api/sizes", {});
+    $("#sizes").textContent = `home ${bytes(sizes.home)}, workspace ${bytes(sizes.workspace)}`;
+  } catch (error) {
+    if (!(error instanceof SignedOut)) $("#sizes").textContent = `could not calculate: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+// ---- Providers: on open and on Refresh ----
+
+async function copy(text, button) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // The clipboard API needs HTTPS; plain HTTP inside a tailnet falls back to a selection.
+    const area = h("textarea", { class: "offscreen", readonly: true });
+    area.value = text;
+    document.body.append(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
+  button.textContent = "Copied";
+  setTimeout(() => (button.textContent = "Copy"), 1500);
+}
+
+function commandLine(command) {
+  const button = h("button", { type: "button", onclick: () => copy(command, button) }, "Copy");
+  return h("div", { class: "command" }, h("code", null, command), button);
+}
+
+function providerCard(p) {
+  const [text, style] = !p.installed ? ["Not installed", "muted"]
+    : p.signedIn === null ? ["Unknown", "muted"]
+    : p.signedIn ? ["Signed in", "ok"]
+    : ["Not signed in", "muted"];
+  return h("article", { class: "panel card" },
+    h("header", null, h("h3", null, p.name), h("span", { class: `badge ${style}` }, text)),
+    p.method && h("p", null, p.method),
+    p.account && h("p", { class: "muted" }, p.account),
+    p.details.map((detail) => h("p", { class: "muted" }, detail)),
+    p.version && h("p", { class: "muted" }, `Version ${p.version}`),
+    p.warnings.length > 0 && h("ul", { class: "warnings" }, p.warnings.map((warning) => h("li", null, warning))),
+    p.notes.map((note) => h("p", { class: "note" }, note)),
+    p.signIn && commandLine(p.signIn),
+  );
+}
+
+async function loadProviders() {
+  const button = $("#providers-refresh");
+  button.disabled = true;
+  try {
+    const { providers } = await api("api/providers");
+    $("#providers").replaceChildren(...providers.map(providerCard));
+    setReds("providers", providers.flatMap((p) => p.warnings.map((warning) => `${p.name}: ${warning}`)));
+  } catch (error) {
+    if (!(error instanceof SignedOut)) $("#providers").replaceChildren(failed(error));
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$("#providers-refresh").addEventListener("click", loadProviders);
+
+// ---- T3 access: live countdowns, red under 7 days ----
+
+let countdowns = [];
+let accessReds = "";
+
+function tick() {
+  const now = Date.now();
+  const red = [];
+  for (const c of countdowns) {
+    const left = c.at - now;
+    const soon = c.warn && left < 7 * DAY_MS;
+    c.element.textContent = left > 0 ? `Expires in ${countdown(left)}` : "Expired";
+    c.element.className = soon ? "bad" : "";
+    if (soon) red.push(left > 0 ? `T3 access for ${c.label} expires in ${duration(left / 1000)}; pair it again.` : `T3 access for ${c.label} has expired.`);
+  }
+  if (red.join("\n") !== accessReds) {
+    accessReds = red.join("\n");
+    setReds("access", red);
+  }
+}
+setInterval(tick, 1000);
+
+function expiry(at, label, warn) {
+  const element = h("div");
+  if (at) countdowns.push({ element, at: new Date(at).getTime(), label, warn });
+  return element;
+}
+
+function renderAccess({ sessions, pairings }) {
+  countdowns = [];
+  const byExpiry = (a, b) => String(a.expiresAt).localeCompare(String(b.expiresAt));
+  const devices = sessions === null ? h("p", { class: "bad" }, "Could not read the paired devices.")
+    : sessions.length === 0 ? h("p", { class: "muted" }, "No paired devices.")
+    : h("ul", { class: "list" }, [...sessions].sort(byExpiry).map((s) => h("li", null, h("div", null,
+        h("strong", null, s.label || "Unnamed device"), " ", muted([s.os, s.deviceType].filter(Boolean).join(", ")),
+        h("div", { class: "muted" }, `Last connected ${ago(s.lastConnectedAt)}`),
+        expiry(s.expiresAt, s.label || "a paired device", true),
+      ))));
+  const links = pairings === null ? h("p", { class: "bad" }, "Could not read the pairing links.")
+    : pairings.length === 0 ? h("p", { class: "muted" }, "No unused pairing links.")
+    : h("ul", { class: "list" }, [...pairings].sort(byExpiry).map((p) => h("li", null, h("div", null,
+        h("strong", null, p.label || "Unlabelled link"),
+        h("div", { class: "muted" }, `Created ${ago(p.createdAt)}`),
+        expiry(p.expiresAt, p.label, false),
+      ))));
+  $("#access").replaceChildren(
+    h("h3", null, "Paired devices"), devices,
+    h("h3", null, "Unused pairing links"), links,
+    h("p", { class: "note" }, "A paired device's access expires 30 days after pairing."),
+  );
+  tick();
+}
+
+async function loadAccess() {
+  try {
+    renderAccess(await api("api/access"));
+  } catch (error) {
+    if (!(error instanceof SignedOut)) $("#access").replaceChildren(failed(error));
+  }
+}
+
+// ---- Skills ----
+
+function skillList(list, withAgents) {
+  if (list.length === 0) return h("p", { class: "muted" }, "None.");
+  return h("ul", { class: "list" }, list.map((skill) => h("li", null, h("div", null,
+    h("strong", null, skill.name), " ",
+    withAgents && skill.agents.map((agent) => h("span", { class: "chip" }, agent)),
+    skill.description && h("p", { class: "clamp muted", onclick: (event) => event.currentTarget.classList.toggle("open") }, skill.description),
+  ))));
+}
+
+async function loadSkills() {
+  try {
+    const skills = await api("api/skills");
+    $("#skills").replaceChildren(
+      h("h3", null, `Installed (${skills.installed.length})`), skillList(skills.installed, true),
+      h("details", null, h("summary", null, `Synced from claude.ai (${skills.synced.length})`), skillList(skills.synced, false)),
+      h("details", null, h("summary", null, `Built into Codex (${skills.builtIn.length})`), skillList(skills.builtIn, false)),
+      h("p", { class: "note" }, "Shared is ~/.agents/skills, which Codex, Cursor and OpenCode read. Project skills live in each repository (.claude/skills, .agents/skills, …) and are not listed here."),
+    );
+  } catch (error) {
+    if (!(error instanceof SignedOut)) $("#skills").replaceChildren(failed(error));
+  }
+}
+
+// ---- Dashboard devices ----
+
+async function signOut(device, button) {
+  button.disabled = true;
+  try {
+    await api("api/devices/sign-out", { id: device.id });
+  } catch (error) {
+    if (error instanceof SignedOut) return;
+    button.disabled = false;
+    return;
+  }
+  if (device.current) showSignIn();
+  else loadDevices();
+}
+
+async function loadDevices() {
+  try {
+    const { devices } = await api("api/devices");
+    $("#devices").replaceChildren(h("ul", { class: "list" }, devices.map((device) => {
+      const button = h("button", { type: "button", onclick: () => signOut(device, button) }, "Sign out");
+      return h("li", null,
+        h("div", null,
+          h("strong", null, device.label), device.current && h("span", { class: "badge ok" }, "This device"),
+          h("div", { class: "muted" }, `Signed in ${ago(device.createdAt)}, last used ${ago(device.lastUsedAt)}`),
+        ),
+        button,
+      );
+    })));
+  } catch (error) {
+    if (!(error instanceof SignedOut)) $("#devices").replaceChildren(failed(error));
+  }
+}
+
+// ---- Sign-in and start ----
+
+function showBoard() {
+  boardShown = true;
+  $("#sign-in").hidden = true;
+  $("#board").hidden = false;
+  loadProviders();
+  loadAccess();
+  loadSkills();
+  loadDevices();
+}
+
+function showSignIn() {
+  boardShown = false;
+  clearTimeout(healthTimer);
+  $("#board").hidden = true;
+  $("#sign-in").hidden = false;
+  $("#password").focus();
+}
+
+$("#sign-in-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = $("#sign-in-form button");
+  const error = $("#sign-in-error");
+  button.disabled = true;
+  error.hidden = true;
+  try {
+    const response = await fetch("api/sign-in", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: $("#password").value }),
+    });
+    if (response.ok) {
+      $("#password").value = "";
+      await loadHealth();
+      return;
+    }
+    error.textContent = response.status === 401 ? "Wrong password." : `The dashboard answered ${response.status}.`;
+  } catch (failure) {
+    error.textContent = `Could not reach the dashboard: ${failure.message}.`;
+  } finally {
+    button.disabled = false;
+  }
+  error.hidden = false;
+});
+
+loadHealth();
+</script>
+</body>
+</html>

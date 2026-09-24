@@ -112,8 +112,10 @@ RUN groupadd --gid 1000 t3codebox \
  && ln -s /etc/t3codebox/machine-info /etc/machine-info
 
 COPY rootfs/ /
+COPY Icon/final/adaptive/t3codebox-48.svg /usr/local/lib/t3codebox-dashboard/icon.svg
 
-ENV HOME=/home/t3codebox \
+ENV T3CODEBOX_VERSION=${IMAGE_VERSION} \
+    HOME=/home/t3codebox \
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/t3codebox/.local/bin \
     LANG=C.UTF-8 \
     T3CODE_HOST=0.0.0.0 \
@@ -126,7 +128,8 @@ ENV HOME=/home/t3codebox \
 
 USER 1000:1000
 WORKDIR /workspace
-EXPOSE 3773
+# 3773: T3, 3772: the dashboard (rootfs/usr/local/lib/t3codebox-dashboard).
+EXPOSE 3772 3773
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD curl -fsS -o /dev/null "http://127.0.0.1:${T3CODE_PORT}/.well-known/t3/environment" || exit 1

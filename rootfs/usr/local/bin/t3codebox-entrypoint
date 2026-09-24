@@ -1,5 +1,6 @@
 #!/bin/bash
-# Entrypoint of the t3codebox image: user setup, browser tool registration, then the command (`t3 serve`).
+# Entrypoint of the t3codebox image: user setup, browser tool registration, the dashboard, then the command
+# (`t3 serve`).
 set -euo pipefail
 
 # The uid set with compose `user:` becomes the t3codebox user (name and home) for every process,
@@ -28,5 +29,14 @@ done
 
 # Detached so tini, not t3, reaps it.
 (t3codebox-browser-setup &)
+
+# The dashboard on port 3772, restarted whenever it exits, so it never takes T3 down. DASHBOARD=off: none.
+if [ "${DASHBOARD:-on}" != off ]; then
+  (while :; do
+    node /usr/local/lib/t3codebox-dashboard/server.js || true
+    echo "t3codebox: the dashboard stopped; restarting it in 5 s" >&2
+    sleep 5
+  done &)
+fi
 
 exec "$@"
