@@ -11,7 +11,11 @@ Every change goes through a pull request, one-line fixes included; `main` takes 
 4. More work after that: `gh pr ready --undo` first, or the next green push merges. Marking it ready
    again turns auto-merge back on.
 
-A failing check blocks the merge; push the fix to the same branch.
+A failing check blocks the merge. If it failed before the tests ran (a registry's 429, a lost runner),
+re-run it: `gh run rerun <run-id> --failed`. Otherwise it is step 4: undo, fix, mark ready again.
+
+In Claude Code the `ship` skill (`.claude/skills/ship`) reviews the change, does step 3, and watches CI
+to the merge: it re-runs upstream failures and handles real ones as above.
 
 The pull request title becomes the commit subject on `main`, and the description its body: say what
 changed and why.
