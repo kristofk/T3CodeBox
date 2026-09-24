@@ -947,10 +947,16 @@ async function revokeT3(kind, id) {
 function restartT3() {
   const pid = findT3Server(processes());
   if (!pid) return false;
-  setTimeout(() => {
+  const signal = (name) => {
     try {
-      process.kill(pid, "SIGTERM");
+      process.kill(pid, name);
     } catch {}
+  };
+  setTimeout(() => {
+    signal("SIGTERM");
+    // As `docker stop` does: SIGKILL if T3 is still there after 10 s. Once T3 exits, the container
+    // stops and takes this timer with it.
+    setTimeout(() => signal("SIGKILL"), 10_000);
   }, 500);
   return true;
 }
