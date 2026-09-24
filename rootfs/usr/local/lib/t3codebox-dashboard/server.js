@@ -1,9 +1,10 @@
-// T3CodeBox dashboard: a status board for the container on port 3772, behind a password.
-// Node's standard library only. The parsers (plain functions from text to data), the provider cards and
-// the session store are exported for ci/dashboard.test.js; the server starts only when run directly.
+// T3CodeBox dashboard: a status board for the container on port 3772, where settings can also be changed,
+// behind a password. Node's standard library only. The parsers (plain functions from text to data), request
+// checks, provider cards, jobs and the session store are exported for ci/dashboard.test.js; the server
+// starts only when run directly.
 "use strict";
 
-const { execFile } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const dns = require("node:dns/promises");
 const fs = require("node:fs");
@@ -207,12 +208,13 @@ function parseGhStatus(text) {
   return accounts;
 }
 
-// `t3 auth session list --json`: paired clients. Kept: label, device, times. Dropped: IP addresses, scopes,
-// ids, and `connected` (it read false for a connected client).
+// `t3 auth session list --json`: paired clients. Kept: the id (to revoke), label, device, times. Dropped:
+// IP addresses, scopes, and `connected` (it read false for a connected client).
 function parseT3Sessions(text) {
   const list = parseJson(text);
   if (!Array.isArray(list)) return null;
   return list.map((s) => ({
+    id: str(s.sessionId),
     label: str(s.client?.label),
     deviceType: str(s.client?.deviceType),
     os: str(s.client?.os),
@@ -227,7 +229,14 @@ function parseT3Sessions(text) {
 function parseT3Pairings(text) {
   const list = parseJson(text);
   if (!Array.isArray(list)) return null;
-  return list.map((p) => ({ label: str(p.label), createdAt: str(p.createdAt), expiresAt: str(p.expiresAt) }));
+  return list.map((p) => ({ id: str(p.id), label: str(p.label), createdAt: str(p.createdAt), expiresAt: str(p.expiresAt) }));
+}
+
+// `t3 auth pairing create --json`: the new link, shown once. The scopes are left out.
+function parsePairingCreate(text) {
+  const p = parseJson(text);
+  if (!p || typeof p !== "object" || !str(p.pairUrl)) return null;
+  return { id: str(p.id), label: str(p.label), pairUrl: p.pairUrl, credential: str(p.credential), expiresAt: str(p.expiresAt) };
 }
 
 // SKILL.md frontmatter between the leading "---" lines: name and description. Handles the value forms
@@ -289,6 +298,148 @@ function userAgentLabel(userAgent) {
     : null;
   if (browser && device) return `${browser} on ${device}`;
   return browser || (device ? `Browser on ${device}` : "Unknown browser");
+}
+
+// ---- Settings: requests checked, CLI output read ----
+
+// A CLI's progress output as readable lines, for a job's log: the redraws of a spinner (cursor to column 1,
+// clear line) become line breaks, ANSI codes go, and spinner frames and bare box borders are skipped.
+function outputLines(text) {
+  const lines = [];
+  for (const raw of String(text)
+    .replace(/\x1b\[\d*G|\x1b\[\d*[JK]|\r/g, "\n")
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
+    .split("\n")) {
+    const line = raw.trimEnd();
+    if (!line.trim() || /^[\s│├└┌┬┴┼─╭╮╯╰]*$/.test(line) || /^[◒◐◓◑]/.test(line)) continue;
+    if (line !== lines[lines.length - 1]) lines.push(line);
+  }
+  return lines;
+}
+
+// `skills add <repo> -l`: under "Available Skills", each skill's name after "│" and four spaces, its
+// description after six.
+function parseSkillsListing(text) {
+  const skills = [];
+  let listing = false;
+  for (const line of outputLines(text)) {
+    if (/Available Skills/.test(line)) listing = true;
+    if (!listing) continue;
+    const name = line.match(/^│ {4}(\S.*)$/);
+    const description = line.match(/^│ {6}(\S.*)$/);
+    if (name) skills.push({ name: name[1], description: null });
+    else if (description && skills.length) skills[skills.length - 1].description = description[1];
+  }
+  return skills;
+}
+
+// `skills add … --json`: one entry per skill, with its status, agents and security assessment.
+function parseSkillsAdd(text) {
+  const list = parseJson(text);
+  if (!Array.isArray(list)) return null;
+  return list.map((s) => ({
+    name: str(s.name),
+    status: str(s.status),
+    error: str(s.error),
+    agents: Array.isArray(s.agents) ? s.agents.filter((a) => typeof a === "string") : [],
+    security: s.security && typeof s.security === "object"
+      ? { gen: str(s.security.gen), socket: str(s.security.socket), snyk: str(s.security.snyk) }
+      : null,
+  }));
+}
+
+// What `skills add` accepts from the page: a GitHub owner/repo or an https URL. Never something that
+// starts with "-", which the CLI would read as an option.
+function validSkillSource(source) {
+  return typeof source === "string" && source.length <= 300 &&
+    /^(?:[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9_.-]+|https:\/\/[A-Za-z0-9.-]+(?::\d+)?(?:\/\S*)?)$/.test(source);
+}
+
+// A skill's name or folder, as `skills add --skill` and `skills remove` take them.
+function validSkillName(name) {
+  return typeof name === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/.test(name);
+}
+
+// T3's pairing and session ids are UUIDs.
+function validId(id) {
+  return typeof id === "string" && /^[A-Za-z0-9-]{1,64}$/.test(id);
+}
+
+const controlCharacters = /[\x00-\x1f\x7f]/;
+
+// git's user.name and user.email; an empty value unsets it. A leading "-" would read as an option.
+function checkGitAuthor(body) {
+  const name = typeof body?.name === "string" ? body.name.trim() : null;
+  const email = typeof body?.email === "string" ? body.email.trim() : null;
+  if (name === null || email === null) return { error: "Expected a name and an email." };
+  if (name.length > 100 || controlCharacters.test(name) || name.startsWith("-")) return { error: "That name is not usable." };
+  if (email && (email.length > 254 || !/^[^\s@<>-][^\s@<>]*@[^\s@<>]+$/.test(email))) return { error: "That email is not usable." };
+  return { name, email };
+}
+
+const PAIRING_TTLS = ["15m", "1h", "1d", "7d", "30d"];
+
+// A new pairing link: the public base URL of T3 (http or https, no query or fragment), a validity from
+// the page's list and an optional label.
+function checkPairingRequest(body) {
+  let url;
+  try {
+    url = new URL(body?.baseUrl);
+  } catch {
+    return { error: "The base URL is not a URL." };
+  }
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    return { error: "The base URL must be a plain http or https address." };
+  }
+  if (!PAIRING_TTLS.includes(body.ttl)) return { error: "Unknown validity." };
+  const label = typeof body.label === "string" ? body.label.trim() : "";
+  if (label.length > 60 || controlCharacters.test(label) || label.startsWith("-")) return { error: "That label is not usable." };
+  return { baseUrl: `${url.origin}${url.pathname.replace(/\/+$/, "")}`, ttl: body.ttl, label: label || "Dashboard" };
+}
+
+// `t3 serve`: the T3 process tini started (the entrypoint execs into it), not a `t3 auth` call.
+function findT3Server(processes) {
+  return processes.find((p) => p.ppid === 1 && p.exe && /^\/opt\/t3\/t3(?: \(deleted\))?$/.test(p.exe))?.pid ?? null;
+}
+
+// Slow actions run as jobs: a POST starts one and returns at once, and the page polls it. One job of a
+// kind runs at a time (starting another returns the running one); the latest job of each kind is kept so
+// a page that reloads finds it again. `work(log)` gets the output so far and returns the result.
+class Jobs {
+  constructor({ lines = 40, now = Date.now } = {}) {
+    this.lines = lines;
+    this.now = now;
+    this.jobs = new Map();
+  }
+
+  start(kind, title, work) {
+    const running = this.latest(kind);
+    if (running?.state === "running") return { job: running, started: false };
+    for (const [id, job] of this.jobs) if (job.kind === kind) this.jobs.delete(id);
+    const job = { id: crypto.randomBytes(6).toString("hex"), kind, title, state: "running", lines: [], result: null, error: null, startedAt: this.now(), finishedAt: null };
+    this.jobs.set(job.id, job);
+    const log = (output) => (job.lines = outputLines(output).slice(-this.lines));
+    Promise.resolve()
+      .then(() => work(log))
+      .then(
+        (result) => Object.assign(job, { state: "done", result: result ?? null }),
+        (error) => Object.assign(job, { state: "failed", error: String(error?.message || error) }),
+      )
+      .finally(() => (job.finishedAt = this.now()));
+    return { job, started: true };
+  }
+
+  get(id) {
+    return this.jobs.get(id) ?? null;
+  }
+
+  latest(kind) {
+    return [...this.jobs.values()].find((job) => job.kind === kind) ?? null;
+  }
+
+  all() {
+    return [...this.jobs.values()];
+  }
 }
 
 // ---- Provider cards: parsed status plus which variables are set (never their values) ----
@@ -523,14 +674,20 @@ const hasFile = (file) => {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// A CLI's output. Never rejects; `missing` means the command is not installed.
+// A CLI's output and exit code. Never rejects; `missing` means the command is not installed.
 function run(command, args, timeout = 20_000) {
   return new Promise((resolve) => {
     const child = execFile(
       command,
       args,
       { cwd: HOME, timeout, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, NO_COLOR: "1" } },
-      (error, stdout, stderr) => resolve({ missing: error?.code === "ENOENT", stdout: String(stdout), stderr: String(stderr) }),
+      (error, stdout, stderr) =>
+        resolve({
+          missing: error?.code === "ENOENT",
+          code: error ? (typeof error.code === "number" ? error.code : -1) : 0,
+          stdout: String(stdout),
+          stderr: String(stderr),
+        }),
     );
     child.stdin?.end();
   });
@@ -558,7 +715,7 @@ function httpGet(options) {
 // CLI versions, read once each: the image is the only way they change. An installed CLI that gave no
 // version (a slow first start) is asked again on a later call, at most every 30 s, without making that
 // call wait. `check(command)` returns { installed, version }.
-const CLIS = { t3: "t3", claude: "claude", codex: "codex", cursor: "cursor-agent", grok: "grok", opencode: "opencode", gh: "gh" };
+const CLIS = { t3: "t3", claude: "claude", codex: "codex", cursor: "cursor-agent", grok: "grok", opencode: "opencode", gh: "gh", skills: "skills" };
 function versionCache(check, now = () => performance.now()) {
   const versions = {};
   let running = null;
@@ -732,7 +889,7 @@ function skills() {
       try {
         key = fs.realpathSync(key);
       } catch {}
-      const item = installed.get(key) ?? { ...skill, agents: [] };
+      const item = installed.get(key) ?? { ...skill, folder: entry, agents: [] };
       item.agents.push(agent);
       installed.set(key, item);
     }
@@ -749,6 +906,128 @@ async function sizes() {
   const result = await run("du", ["-sk", HOME, WORKSPACE], 10 * 60_000);
   const parsed = parseDu(result.stdout);
   return { home: parsed[HOME] ?? null, workspace: parsed[WORKSPACE] ?? null };
+}
+
+// ---- Settings: actions ----
+
+const lastLine = (text) => outputLines(text).pop() ?? "";
+
+async function gitAuthor() {
+  const [name, email] = await Promise.all([
+    run("git", ["config", "--global", "--get", "user.name"]),
+    run("git", ["config", "--global", "--get", "user.email"]),
+  ]);
+  const overrides = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"].filter((name) => process.env[name]);
+  return { name: str(name.stdout.trim()), email: str(email.stdout.trim()), overrides };
+}
+
+async function setGitAuthor({ name, email }) {
+  for (const [key, value] of [["user.name", name], ["user.email", email]]) {
+    const result = await run("git", value ? ["config", "--global", key, value] : ["config", "--global", "--unset", key]);
+    // --unset exits 5 when the key was not set.
+    if (result.code !== 0 && !(result.code === 5 && !value)) throw new Error(lastLine(result.stderr) || `git config ${key} failed`);
+  }
+}
+
+async function createPairing({ baseUrl, ttl, label }) {
+  const result = await run("t3", ["auth", "pairing", "create", "--base-url", baseUrl, "--ttl", ttl, "--label", label, "--json"]);
+  const pairing = parsePairingCreate(result.stdout);
+  if (!pairing) throw new Error(lastLine(result.stderr) || "T3 did not create a pairing link.");
+  return pairing;
+}
+
+// kind: "pairing" (an unused link) or "session" (a paired device).
+async function revokeT3(kind, id) {
+  const result = await run("t3", ["auth", kind, "revoke", id]);
+  if (result.code !== 0) throw new Error(lastLine(result.stderr) || lastLine(result.stdout) || `t3 auth ${kind} revoke failed`);
+}
+
+// Stops `t3 serve`; tini exits with it, and Docker's restart policy (unless-stopped in compose.yaml)
+// starts the container again. The dashboard goes down with it and comes back.
+function restartT3() {
+  const pid = findT3Server(processes());
+  if (!pid) return false;
+  const signal = (name) => {
+    try {
+      process.kill(pid, name);
+    } catch {}
+  };
+  setTimeout(() => {
+    signal("SIGTERM");
+    // As `docker stop` does: SIGKILL if T3 is still there after 10 s. Once T3 exits, the container
+    // stops and takes this timer with it.
+    setTimeout(() => signal("SIGKILL"), 10_000);
+  }, 500);
+  return true;
+}
+
+// Runs a CLI for a job: its output goes to the job's log as it comes. Resolves with stdout on exit 0,
+// rejects with the last line of output otherwise.
+function runLogged(command, args, log, { timeout = 5 * 60_000, logStdout = true } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd: HOME, env: { ...process.env, NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    let stdout = "";
+    const add = (chunk) => {
+      output = (output + chunk).slice(-200_000);
+      log(output);
+    };
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      if (logStdout) add(chunk);
+    });
+    child.stderr.on("data", add);
+    const timer = setTimeout(() => child.kill("SIGTERM"), timeout);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error.code === "ENOENT" ? new Error(`${command} is not installed.`) : error);
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(stdout);
+      else reject(new Error(lastLine(output) || `${command} ${signal ? `was stopped (${signal})` : `exited with ${code}`}.`));
+    });
+  });
+}
+
+// Skills go to every installed agent: `skills` keeps one copy in ~/.agents/skills and links it where needed.
+const SKILL_AGENTS = { claude: "claude-code", codex: "codex", cursor: "cursor", grok: "grok", opencode: "opencode" };
+
+async function skillAgents() {
+  const versions = await cliVersions();
+  const agents = Object.entries(SKILL_AGENTS).filter(([id]) => versions[id]?.installed).map(([, agent]) => agent);
+  if (!agents.length) throw new Error("No agent is installed.");
+  return agents;
+}
+
+function listSkillsJob(jobs, source) {
+  return jobs.start("skills", `Skills in ${source}`, async (log) => ({
+    action: "list",
+    source,
+    skills: parseSkillsListing(await runLogged("skills", ["add", source, "-l"], log)),
+  }));
+}
+
+function installSkillJob(jobs, source, skill) {
+  return jobs.start("skills", `Installing ${skill} from ${source}`, async (log) => {
+    const agents = await skillAgents();
+    const output = await runLogged("skills", ["add", source, "--skill", skill, "-g", "-y", "--agent", ...agents, "--json"], log, { logStdout: false });
+    const installed = parseSkillsAdd(output) ?? [];
+    if (!installed.length) throw new Error(`${source} has no skill named ${skill}.`);
+    const failed = installed.filter((s) => s.status !== "installed");
+    if (failed.length) throw new Error(failed.map((s) => `${s.name}: ${s.error || s.status}`).join("; "));
+    return { action: "install", source, installed };
+  });
+}
+
+function removeSkillJob(jobs, folder) {
+  return jobs.start("skills", `Removing ${folder}`, async (log) => {
+    await runLogged("skills", ["remove", folder, "-g", "-y"], log);
+    if (skills().installed.some((s) => s.folder === folder)) throw new Error(`skills did not remove ${folder}.`);
+    return { action: "remove", folder };
+  });
 }
 
 // ---- HTTP ----
@@ -817,6 +1096,7 @@ function main() {
   const sharedProviders = shared(providers);
   const sharedAccess = shared(access);
   const sharedSizes = shared(sizes);
+  const jobs = new Jobs();
 
   // Wrong passwords wait a second each, one at a time.
   let signIns = Promise.resolve();
@@ -847,6 +1127,21 @@ function main() {
     if (!url.pathname.startsWith("/api/")) return send(response, 404, "Not found");
     if (!session) return sendJson(response, 401, { error: "Sign in first." });
 
+    const jobMatch = route.match(/^GET \/api\/jobs\/([0-9a-f]{12})$/);
+    if (jobMatch) {
+      const job = jobs.get(jobMatch[1]);
+      return job ? sendJson(response, 200, { job }) : sendJson(response, 404, { error: "No such job." });
+    }
+    // Settings run a CLI; what it says when it fails goes back to the page.
+    const act = async (action) => {
+      try {
+        return await action();
+      } catch (error) {
+        return sendJson(response, 502, { error: String(error?.message || error) });
+      }
+    };
+    const startJob = ({ job, started }) => sendJson(response, started ? 202 : 200, { job, started });
+
     switch (route) {
       case "GET /api/status":
         return sendJson(response, 200, await health());
@@ -867,6 +1162,53 @@ function main() {
       case "POST /api/sizes":
         if (!(await readJson(request))) return sendJson(response, 400, { error: "Expected JSON." });
         return sendJson(response, 200, await sharedSizes());
+      case "GET /api/git":
+        return sendJson(response, 200, await gitAuthor());
+      case "POST /api/git": {
+        const author = checkGitAuthor(await readJson(request));
+        if (author.error) return sendJson(response, 400, author);
+        return act(async () => {
+          await setGitAuthor(author);
+          return sendJson(response, 200, await gitAuthor());
+        });
+      }
+      case "POST /api/pairing": {
+        const pairing = checkPairingRequest(await readJson(request));
+        if (pairing.error) return sendJson(response, 400, pairing);
+        return act(async () => sendJson(response, 200, { pairing: await createPairing(pairing) }));
+      }
+      case "POST /api/pairing/revoke":
+      case "POST /api/sessions/revoke": {
+        const body = await readJson(request);
+        if (!validId(body?.id)) return sendJson(response, 400, { error: "Expected an id." });
+        return act(async () => {
+          await revokeT3(route.includes("pairing") ? "pairing" : "session", body.id);
+          return send(response, 204);
+        });
+      }
+      case "POST /api/restart":
+        if (!(await readJson(request))) return sendJson(response, 400, { error: "Expected JSON." });
+        return restartT3() ? sendJson(response, 202, { restarting: true }) : sendJson(response, 409, { error: "T3's server process was not found." });
+      case "GET /api/jobs":
+        return sendJson(response, 200, { jobs: jobs.all() });
+      case "POST /api/skills/list": {
+        const body = await readJson(request);
+        if (!validSkillSource(body?.source)) return sendJson(response, 400, { error: "Expected a GitHub owner/repo or an https URL." });
+        return startJob(listSkillsJob(jobs, body.source));
+      }
+      case "POST /api/skills/install": {
+        const body = await readJson(request);
+        if (!validSkillSource(body?.source)) return sendJson(response, 400, { error: "Expected a GitHub owner/repo or an https URL." });
+        if (!validSkillName(body?.skill)) return sendJson(response, 400, { error: "Expected a skill name." });
+        return startJob(installSkillJob(jobs, body.source, body.skill));
+      }
+      case "POST /api/skills/remove": {
+        const body = await readJson(request);
+        if (!validSkillName(body?.folder) || !skills().installed.some((s) => s.folder === body.folder)) {
+          return sendJson(response, 400, { error: "No such installed skill." });
+        }
+        return startJob(removeSkillJob(jobs, body.folder));
+      }
       default:
         return sendJson(response, 404, { error: "Not found." });
     }
@@ -885,7 +1227,9 @@ function main() {
 module.exports = {
   parseVersion, parseMountinfo, describeMount, parseKeyValues, parseMemory, parseCpuMax, parseProcStat, containerUptime,
   agentOf, countAgents, parseClaudeStatus, parseCodexStatus, parseCursorStatus, parseOpencodeAuth, parseGhStatus,
-  parseT3Sessions, parseT3Pairings, parseSkillFrontmatter, parseDu, userAgentLabel, versionCache,
+  parseT3Sessions, parseT3Pairings, parsePairingCreate, parseSkillFrontmatter, parseDu, userAgentLabel, versionCache,
+  outputLines, parseSkillsListing, parseSkillsAdd, validSkillSource, validSkillName, validId, checkGitAuthor,
+  checkPairingRequest, findT3Server, Jobs,
   claudeCard, codexCard, cursorCard, grokCard, opencodeCard, githubCard,
   passwordMatches, loadPassword, SessionStore,
 };

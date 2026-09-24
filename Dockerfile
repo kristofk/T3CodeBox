@@ -61,7 +61,7 @@ RUN test -n "$T3_VERSION" || { echo "T3_VERSION build argument is required" >&2;
  && ln -s /opt/t3/t3 /usr/local/bin/t3
 
 # Provider CLIs in system locations. Home is not writable for them, so self-updaters cannot replace them;
-# the image is the only update path.
+# the image is the only update path. The same goes for `skills`, which the dashboard installs skills with.
 RUN has() { [[ " $PROVIDERS " == *" $1 "* ]]; } \
  && case "$TARGETARCH" in amd64) arch=x64 grok_arch=x86_64 ;; arm64) arch=arm64 grok_arch=aarch64 ;; esac \
  && if has claude; then \
@@ -84,7 +84,7 @@ RUN has() { [[ " $PROVIDERS " == *" $1 "* ]]; } \
       curl -fsSL -o /usr/local/bin/grok "https://x.ai/cli/grok-${version}-linux-${grok_arch}"; \
       chmod 755 /usr/local/bin/grok; \
     fi \
- && packages="@playwright/mcp" \
+ && packages="@playwright/mcp skills" \
  && if has codex; then packages="$packages @openai/codex"; fi \
  && if has opencode; then packages="$packages opencode-ai"; fi \
  && npm install -g --no-fund --no-audit --loglevel=error $packages \

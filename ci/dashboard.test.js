@@ -1,5 +1,5 @@
-// Unit tests for the dashboard: parsers, provider cards, password and session store. The samples are real
-// output from a running container (personal details replaced) unless marked "made up".
+// Unit tests for the dashboard: parsers, provider cards, settings checks, jobs, password and session store. The
+// samples are real output from a running container (personal details replaced) unless marked "made up".
 // Run: node --test ci/dashboard.test.js (make check runs it in node:lts-slim).
 "use strict";
 const assert = require("node:assert/strict");
@@ -322,7 +322,7 @@ describe("GitHub", () => {
 });
 
 describe("T3", () => {
-  test("paired devices keep label, device and times only", () => {
+  test("paired devices keep the id, label, device and times only", () => {
     const sessions = d.parseT3Sessions(`[
   {
     "sessionId": "254931ee-d73d-40f6-b617-028524e6d10d",
@@ -344,14 +344,14 @@ describe("T3", () => {
 ]
 `);
     assert.deepEqual(sessions, [{
-      label: "my-iphone", deviceType: "mobile", os: "iOS", browser: null,
+      id: "254931ee-d73d-40f6-b617-028524e6d10d", label: "my-iphone", deviceType: "mobile", os: "iOS", browser: null,
       issuedAt: "2026-09-23T15:11:21.921Z", expiresAt: "2026-10-23T15:11:21.921Z", lastConnectedAt: "2026-09-24T12:25:25.842Z",
     }]);
   });
 
   test("pairing links without the links (made up from the documented fields)", () => {
     assert.deepEqual(d.parseT3Pairings(`[{"id":"p1","label":"t3codebox-test","scopes":["orchestration:read"],"createdAt":"2026-09-24T10:00:00.000Z","expiresAt":"2026-09-24T10:10:00.000Z"}]`),
-      [{ label: "t3codebox-test", createdAt: "2026-09-24T10:00:00.000Z", expiresAt: "2026-09-24T10:10:00.000Z" }]);
+      [{ id: "p1", label: "t3codebox-test", createdAt: "2026-09-24T10:00:00.000Z", expiresAt: "2026-09-24T10:10:00.000Z" }]);
     assert.deepEqual(d.parseT3Pairings("[]\n\n"), []);
     assert.equal(d.parseT3Pairings("Error: no server"), null);
   });
@@ -398,21 +398,190 @@ describe("CLI versions", () => {
       return command === "grok" ? { installed: false, version: null } : { installed: true, version: "1.0.0" };
     }, () => clock);
     const first = await versions();
-    assert.equal(asked.length, 7);
+    const clis = asked.length;
+    assert.ok(clis >= 8);
     assert.equal(first.t3.version, null);
     assert.equal(first.claude.version, "1.0.0");
     clock = 10_000;
     await versions();
-    assert.equal(asked.length, 7);
+    assert.equal(asked.length, clis);
     clock = 40_000;
     assert.equal((await versions()).t3.version, null);
-    assert.deepEqual(asked.slice(7), ["t3"]);
+    assert.deepEqual(asked.slice(clis), ["t3"]);
     answerT3({ installed: true, version: "0.0.42" });
     await new Promise(setImmediate);
     assert.equal((await versions()).t3.version, "0.0.42");
     clock = 100_000;
     await versions();
-    assert.equal(asked.length, 8);
+    assert.equal(asked.length, clis + 1);
+  });
+});
+
+describe("settings: skills", () => {
+  // `skills add anthropics/skills -l` (skills 1.7.0), shortened: spinner redraws, cursor codes and all.
+  const listing = "\n│\n\x1b[?25l│\n◇  Source: https://github.com/anthropics/skills.git\n\x1b[?25h\x1b[?25l│\n" +
+    "◒  Cloning repository…\x1b[1G\x1b[J◐  Cloning repository…\x1b[1G\x1b[J◇  Repository cloned\n\x1b[?25h\x1b[?25l│\n" +
+    "\x1b[1G\x1b[J◇  Found 20 skills\n\x1b[?25h\n│\n◇  Available Skills\nAcademy Guide\n│\n│    academy-guide\n│\n" +
+    "│      Stop and check this skill before finishing any reply.\n\nClaude Api\n│\n│    claude-api\n│\n" +
+    "│      Reference for the Claude API.\n\n│\n└  Use --skill <name> to install specific skills\n\n";
+
+  test("progress output as readable lines", () => {
+    assert.deepEqual(d.outputLines(listing), [
+      "◇  Source: https://github.com/anthropics/skills.git",
+      "◇  Repository cloned",
+      "◇  Found 20 skills",
+      "◇  Available Skills",
+      "Academy Guide",
+      "│    academy-guide",
+      "│      Stop and check this skill before finishing any reply.",
+      "Claude Api",
+      "│    claude-api",
+      "│      Reference for the Claude API.",
+      "└  Use --skill <name> to install specific skills",
+    ]);
+  });
+
+  test("a repository's skills", () => {
+    assert.deepEqual(d.parseSkillsListing(listing), [
+      { name: "academy-guide", description: "Stop and check this skill before finishing any reply." },
+      { name: "claude-api", description: "Reference for the Claude API." },
+    ]);
+    assert.deepEqual(d.parseSkillsListing("◇  Found 0 skills\n"), []);
+  });
+
+  test("the result of an install", () => {
+    const installed = d.parseSkillsAdd(`[
+  {
+    "name": "codebase-design",
+    "status": "installed",
+    "source": "mattpocock/skills",
+    "ref": null,
+    "hash": "5a17552cc1482f1a40124bf4e6c9dbd90ac0dbb47e71c07d47369f9e5f2ae3b5",
+    "path": "/home/t3codebox/.agents/skills/codebase-design",
+    "scope": "global",
+    "agents": ["Claude Code", "Codex", "Cursor", "OpenCode", "Grok Build"],
+    "mode": "symlink",
+    "security": { "gen": "safe", "socket": "0 alerts", "snyk": "low", "details": "https://skills.sh/mattpocock/skills" }
+  }
+]`);
+    assert.deepEqual(installed, [{
+      name: "codebase-design", status: "installed", error: null,
+      agents: ["Claude Code", "Codex", "Cursor", "OpenCode", "Grok Build"],
+      security: { gen: "safe", socket: "0 alerts", snyk: "low" },
+    }]);
+    assert.equal(d.parseSkillsAdd(`[{"status":"failed","error":"The --json flag cannot be combined with --list."}]`)[0].error,
+      "The --json flag cannot be combined with --list.");
+    assert.equal(d.parseSkillsAdd("not json"), null);
+  });
+
+  test("sources and names the CLI gets from the page", () => {
+    for (const ok of ["mattpocock/skills", "anthropics/skills", "vercel-labs/agent-skills", "https://github.com/anthropics/skills"]) {
+      assert.equal(d.validSkillSource(ok), true, ok);
+    }
+    for (const bad of ["-rf", "--help", "skills", "a/b c", "http://example.com/x", ".hidden/x", "", null]) {
+      assert.equal(d.validSkillSource(bad), false, String(bad));
+    }
+    assert.equal(d.validSkillName("grill-me"), true);
+    assert.equal(d.validSkillName("codex:imagegen"), true);
+    for (const bad of ["-x", "a b", "", "*", "../x", 7]) assert.equal(d.validSkillName(bad), false, String(bad));
+  });
+});
+
+describe("settings: git author, pairing, restart", () => {
+  test("git author: set, cleared, or refused", () => {
+    assert.deepEqual(d.checkGitAuthor({ name: " Kristof Kocsis ", email: "someone@example.com" }), { name: "Kristof Kocsis", email: "someone@example.com" });
+    assert.deepEqual(d.checkGitAuthor({ name: "", email: "" }), { name: "", email: "" });
+    for (const bad of [{}, { name: "x" }, { name: "a\nb", email: "" }, { name: "-x", email: "" }, { name: "x", email: "not an email" },
+      { name: "x", email: "-a@b" }, { name: "x".repeat(101), email: "" }, null]) {
+      assert.ok(d.checkGitAuthor(bad).error, JSON.stringify(bad));
+    }
+  });
+
+  test("pairing requests", () => {
+    assert.deepEqual(d.checkPairingRequest({ baseUrl: "https://thunderbox.example.ts.net:4773/", ttl: "1h", label: " iPhone " }),
+      { baseUrl: "https://thunderbox.example.ts.net:4773", ttl: "1h", label: "iPhone" });
+    assert.deepEqual(d.checkPairingRequest({ baseUrl: "https://example.com/t3/", ttl: "30d" }),
+      { baseUrl: "https://example.com/t3", ttl: "30d", label: "Dashboard" });
+    for (const bad of [
+      { baseUrl: "not a url", ttl: "1h" }, { baseUrl: "ftp://example.com", ttl: "1h" }, { baseUrl: "https://example.com/?x=1", ttl: "1h" },
+      { baseUrl: "https://user:pass@example.com", ttl: "1h" }, { baseUrl: "https://example.com", ttl: "1y" },
+      { baseUrl: "https://example.com", ttl: "1h", label: "-x" }, { baseUrl: "https://example.com", ttl: "1h", label: "x".repeat(61) },
+    ]) {
+      assert.ok(d.checkPairingRequest(bad).error, JSON.stringify(bad));
+    }
+    assert.equal(d.validId("1d10a755-bb80-43a5-bfc3-984ee8987c7d"), true);
+    assert.equal(d.validId("x; rm -rf /"), false);
+  });
+
+  test("a new pairing link keeps what the page shows (made up values, real fields)", () => {
+    assert.deepEqual(d.parsePairingCreate(`{"id":"1d10a755-bb80-43a5-bfc3-984ee8987c7d","credential":"ABCDEFGHJKLM","label":"iPhone",
+      "scopes":["orchestration:read"],"expiresAt":"2026-09-24T14:53:08.555Z","pairUrl":"https://example.com:4773/pair#token=ABCDEFGHJKLM"}`), {
+      id: "1d10a755-bb80-43a5-bfc3-984ee8987c7d", label: "iPhone", pairUrl: "https://example.com:4773/pair#token=ABCDEFGHJKLM",
+      credential: "ABCDEFGHJKLM", expiresAt: "2026-09-24T14:53:08.555Z",
+    });
+    assert.equal(d.parsePairingCreate("Error: bad ttl"), null);
+  });
+
+  test("restart finds `t3 serve`, not a `t3 auth` call", () => {
+    const processes = [
+      { pid: 1, ppid: 0, exe: "/usr/bin/tini" },
+      { pid: 7, ppid: 1, exe: "/opt/t3/t3" },
+      { pid: 60, ppid: 1, exe: "/usr/bin/bash" },
+      { pid: 61, ppid: 60, exe: "/usr/local/bin/node" },
+      { pid: 80, ppid: 61, exe: "/opt/t3/t3" },
+    ];
+    assert.equal(d.findT3Server(processes), 7);
+    assert.equal(d.findT3Server(processes.filter((p) => p.pid !== 7)), null);
+  });
+});
+
+describe("jobs", () => {
+  const settle = () => new Promise(setImmediate);
+
+  test("a job logs its output, returns at once and ends with its result", async () => {
+    let finish;
+    const jobs = new d.Jobs({ now: () => 1000 });
+    const { job, started } = jobs.start("skills", "Installing x", (log) => {
+      log("◒  Cloning…\x1b[1G\x1b[J◇  Repository cloned\n");
+      return new Promise((resolve) => (finish = resolve));
+    });
+    await settle();
+    assert.equal(started, true);
+    assert.equal(job.state, "running");
+    assert.deepEqual(job.lines, ["◇  Repository cloned"]);
+    finish({ action: "install" });
+    await settle();
+    assert.equal(job.state, "done");
+    assert.deepEqual(job.result, { action: "install" });
+    assert.equal(job.finishedAt, 1000);
+    assert.equal(jobs.get(job.id), job);
+  });
+
+  test("one job of a kind at a time; the latest is kept", async () => {
+    let finish;
+    const jobs = new d.Jobs();
+    const first = jobs.start("skills", "one", () => new Promise((resolve) => (finish = resolve))).job;
+    const again = jobs.start("skills", "two", () => "never");
+    assert.equal(again.started, false);
+    assert.equal(again.job, first);
+    const other = jobs.start("other", "other kind", () => "ok");
+    assert.equal(other.started, true);
+    await settle();
+    finish();
+    await settle();
+    const next = jobs.start("skills", "three", () => { throw new Error("no such skill"); }).job;
+    await settle();
+    assert.equal(next.state, "failed");
+    assert.equal(next.error, "no such skill");
+    assert.equal(jobs.get(first.id), null);
+    assert.deepEqual(jobs.all().map((job) => job.title).sort(), ["other kind", "three"]);
+  });
+
+  test("the log keeps the last lines", async () => {
+    const jobs = new d.Jobs({ lines: 3 });
+    const { job } = jobs.start("skills", "long", (log) => log("1\n2\n3\n4\n5\n"));
+    await settle();
+    assert.deepEqual(job.lines, ["3", "4", "5"]);
   });
 });
 
