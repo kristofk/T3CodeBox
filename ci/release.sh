@@ -22,11 +22,13 @@ fi
 echo "releasing $tag"
 
 combine() {
-  local name=$1 key=$2 sources=()
+  local name=$1 key=$2 sources=() flags annotations=()
   for a in "${archs[@]}"; do
     sources+=("$name@$(cat "$OUT/digest-$key-$a")")
   done
-  $DOCKER buildx imagetools create -t "$name:$tag" -t "$name:$version" -t "$name:latest" "${sources[@]}"
+  flags=$(index_annotations "${sources[0]}")
+  [ -n "$flags" ] && mapfile -t annotations <<< "$flags"
+  $DOCKER buildx imagetools create -t "$name:$tag" -t "$name:$version" -t "$name:latest" "${annotations[@]}" "${sources[@]}"
 }
 combine "$IMAGE" t3codebox
 combine "$BROWSER_IMAGE" browser
