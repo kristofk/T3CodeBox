@@ -219,6 +219,8 @@ make build T3_VERSION=0.0.42             # a specific T3 Code release
 make build PROVIDERS="claude codex"      # only some providers
 ```
 
+How it's built and why: [docs/](docs/README.md).
+
 `make build` produces `t3codebox:test` and `t3codebox-browser:test`; set `T3CODEBOX_IMAGE=t3codebox T3CODEBOX_TAG=test T3CODEBOX_BROWSER_IMAGE=t3codebox-browser` to run them with `compose.yaml`. The scripts in `ci/` need bash, Docker with buildx and compose; `DOCKER="sudo -E docker"` if your Docker needs sudo. CI runs the same `make` targets.
 
 ## How releases are made
