@@ -16,6 +16,7 @@ Unofficial, unaffiliated, self-proclaimed flagship container for [T3 Code](https
 
 - [x] Claude Code, Codex, Cursor, Grok Build and OpenCode, ready to sign in
 - [x] A real Chromium the agents drive, and you can watch and take over
+- [x] A phone-friendly dashboard for health, sign-ins, devices and skills
 - [x] New T3 Code release? New image, automatically; we check every 15 minutes
 - [x] Tested on amd64 and arm64 before anything ships
 - [x] Daily security scan, with automatic rebuilds for critical fixes
