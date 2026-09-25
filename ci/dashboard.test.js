@@ -240,7 +240,8 @@ describe("Cursor", () => {
 }`);
     const card = d.cursorCard({ installed: true, version: "2026.09.18-9a7762b", status, env: noEnv });
     assert.equal(card.signedIn, false);
-    assert.match(card.notes[0], /CURSOR_API_KEY/);
+    assert.equal(card.signIn, "docker exec -it -e NO_OPEN_BROWSER=1 t3codebox cursor-agent login");
+    assert.deepEqual(card.notes, []);
   });
 
   test("signed in, and the API key method (made up)", () => {
@@ -596,6 +597,81 @@ describe("QR codes", () => {
   });
 });
 
+describe("provider sign-in", () => {
+  // What each CLI printed in a container with nothing signed in (codes, challenges and ids replaced).
+  const samples = {
+    claude: "Opening browser to sign in…\nIf the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile&code_challenge=CHALLENGE&code_challenge_method=S256&state=STATE\nPaste code here if prompted > ",
+    codex: "\nWelcome to Codex [v0.157.0]\nOpenAI's command-line coding agent\n\nFollow these steps to sign in with ChatGPT using device code authorization:\n\n1. Open this link in your browser and sign in to your account\n   https://auth.openai.com/codex/device\n\n2. Enter this one-time code (expires in 15 minutes)\n   ABCD-12345\n\nContinue only if you started this login in Codex. If a website or another person gave you this code, cancel.\n",
+    cursor: "Starting login process...\nAuthenticating with Cursor...\nWaiting for browser authentication...\nOpen a browser and navigate to this link: https://cursor.com/loginDeepControl?challenge=CHALLENGE&uuid=0000aaaa-bbbb-cccc-dddd-eeeeffff0000&mode=login&redirectTarget=cli&supportsSelectedTeamLogin=true\n",
+    grok: "\nTo sign in, open this URL in your browser:\n\n  https://accounts.x.ai/oauth2/device?user_code=WXYZ-2345\n\n  (Could not open browser automatically — open the URL above manually.)\n\nConfirm this code in your browser:\n\n  WXYZ-2345\n\nOnly continue with a code you requested. Don't share it with anyone.\n\nWaiting for authorization...\n",
+    github: "\n! Failed to copy one-time code to clipboard\n  No clipboard utilities available. Please install xsel, xclip, wl-clipboard or Termux:API add-on for termux-clipboard-get/set.\n! First copy your one-time code: ABCD-1234\nOpen this URL to continue in your web browser: https://github.com/login/device\n",
+  };
+
+  test("the link, the code and whether a code is pasted back", () => {
+    const claude = d.parseSignIn(samples.claude);
+    assert.match(claude.url, /^https:\/\/claude\.com\/cai\/oauth\/authorize\?code=true&.*state=STATE$/);
+    assert.equal(claude.code, null);
+    assert.equal(claude.pasteWanted, true);
+    assert.deepEqual(d.parseSignIn(samples.codex), { url: "https://auth.openai.com/codex/device", code: "ABCD-12345", pasteWanted: false });
+    assert.deepEqual(d.parseSignIn(samples.cursor), {
+      url: "https://cursor.com/loginDeepControl?challenge=CHALLENGE&uuid=0000aaaa-bbbb-cccc-dddd-eeeeffff0000&mode=login&redirectTarget=cli&supportsSelectedTeamLogin=true",
+      code: null,
+      pasteWanted: false,
+    });
+    assert.deepEqual(d.parseSignIn(samples.grok), { url: "https://accounts.x.ai/oauth2/device?user_code=WXYZ-2345", code: "WXYZ-2345", pasteWanted: false });
+    assert.deepEqual(d.parseSignIn(samples.github), { url: "https://github.com/login/device", code: "ABCD-1234", pasteWanted: false });
+    assert.deepEqual(d.parseSignIn("Starting login process...\n"), { url: null, code: null, pasteWanted: false });
+  });
+
+  test("GitHub with GH_TOKEN set: no sign-in offered, and why", () => {
+    const card = d.githubCard({ installed: true, accounts: [], env: { GH_TOKEN: true } });
+    assert.equal(card.signIn, null);
+    assert.match(card.notes.join(" "), /GH_TOKEN/);
+    assert.equal(d.githubCard({ installed: true, accounts: [] }).signIn, "docker exec -it t3codebox gh auth login");
+  });
+
+  test("agents the dashboard started do not count as running", () => {
+    const processes = [
+      { pid: 7, ppid: 1 }, { pid: 9, ppid: 7 }, // T3 and an agent
+      { pid: 70, ppid: 60 }, { pid: 71, ppid: 70 }, { pid: 72, ppid: 71 }, // the dashboard, a sign-in, its child
+    ];
+    assert.deepEqual(d.withoutDescendants(processes, 70).map((p) => p.pid), [7, 9, 70]);
+  });
+
+  test("stopping a CLI stops what it started too; a line of input reaches it", async () => {
+    const until = async (check) => {
+      for (let i = 0; i < 100 && !check(); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+    };
+    // Gone, or a zombie waiting for a parent that does not reap (PID 1 in a test container).
+    const gone = (pid) => {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return true;
+      }
+      try {
+        return /\) Z /.test(fs.readFileSync(`/proc/${pid}/stat`, "utf8"));
+      } catch {
+        return true;
+      }
+    };
+    const controller = new AbortController();
+    let output = "";
+    const running = d.runLogged("sh", ["-c", "sleep 60 & echo $!; wait"], (text) => (output = text), { signal: controller.signal });
+    await until(() => /\d/.test(output));
+    const grandchild = Number(output.trim());
+    controller.abort();
+    await assert.rejects(running, /Stopped/);
+    await until(() => gone(grandchild));
+    assert.ok(gone(grandchild), `pid ${grandchild} still runs`);
+
+    let write;
+    const echo = d.runLogged("sh", ["-c", 'read line; echo "got $line"'], () => {}, { onInput: (w) => (write = w) });
+    write("hello");
+    assert.equal((await echo).trim(), "got hello");
+  });
+});
+
 describe("jobs", () => {
   const settle = () => new Promise(setImmediate);
 
@@ -636,6 +712,35 @@ describe("jobs", () => {
     assert.equal(next.error, "no such skill");
     assert.equal(jobs.get(first.id), null);
     assert.deepEqual(jobs.all().map((job) => job.title).sort(), ["other kind", "three"]);
+  });
+
+  test("a stopped job, and one that takes a line of input", async () => {
+    const jobs = new d.Jobs();
+    const { job } = jobs.start("signin:x", "waits", (log, handle) =>
+      new Promise((resolve, reject) => handle.signal.addEventListener("abort", () => reject(new Error("Stopped.")))));
+    await settle();
+    assert.equal(jobs.stop(job.id), true);
+    await settle();
+    assert.equal(job.state, "stopped");
+    assert.equal(jobs.stop(job.id), false);
+
+    const lines = [];
+    let finish;
+    const paste = jobs.start("signin:y", "pastes", (log, handle) => {
+      handle.acceptInput((line) => lines.push(line));
+      handle.setPrompt({ url: "https://example.com", code: null, pasteWanted: true });
+      return new Promise((resolve) => (finish = resolve));
+    }).job;
+    await settle();
+    assert.equal(paste.acceptsInput, true);
+    assert.deepEqual(paste.prompt, { url: "https://example.com", code: null, pasteWanted: true });
+    assert.equal(jobs.input(paste.id, "code#state"), true);
+    assert.deepEqual(lines, ["code#state"]);
+    finish();
+    await settle();
+    assert.equal(paste.acceptsInput, false);
+    assert.equal(jobs.input(paste.id, "again"), false);
+    assert.doesNotThrow(() => JSON.stringify(paste));
   });
 
   test("the log keeps the last lines", async () => {
