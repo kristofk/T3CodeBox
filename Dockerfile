@@ -19,7 +19,9 @@ LABEL org.opencontainers.image.title="T3CodeBox" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.version="${IMAGE_VERSION}"
 
-# Base tools, and gh from GitHub's apt repository (T3 refuses gh older than 2.81).
+# Base tools, and gh from GitHub's apt repository (T3 refuses gh older than 2.81). The C compiler and the most
+# common library headers are for what agents build: Rust links with cc, and native npm, pip and gem packages
+# compile against OpenSSL, zlib and libffi. Agents can't apt-get the rest.
 RUN export DEBIAN_FRONTEND=noninteractive \
  && echo force-unsafe-io > /etc/dpkg/dpkg.cfg.d/docker-unsafe-io \
  && apt-get update \
@@ -27,6 +29,7 @@ RUN export DEBIAN_FRONTEND=noninteractive \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl git openssh-client jq ripgrep procps less tzdata \
       python3 make libnss-wrapper tini xz-utils libatomic1 \
+      build-essential pkg-config libssl-dev zlib1g-dev libffi-dev \
  && install -d -m 755 /etc/apt/keyrings \
  && curl -fsSL -o /etc/apt/keyrings/githubcli-archive-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \
  && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
@@ -62,6 +65,8 @@ RUN test -n "$T3_VERSION" || { echo "T3_VERSION build argument is required" >&2;
 
 # Provider CLIs in system locations. Home is not writable for them, so self-updaters cannot replace them;
 # the image is the only update path. The same goes for `skills`, which the dashboard installs skills with.
+# The npm packages' commands run the image's Node by its path: `env node` would find a project's Node
+# through mise's shims, which come first on PATH.
 RUN has() { [[ " $PROVIDERS " == *" $1 "* ]]; } \
  && case "$TARGETARCH" in amd64) arch=x64 grok_arch=x86_64 ;; arm64) arch=arm64 grok_arch=aarch64 ;; esac \
  && if has claude; then \
@@ -88,8 +93,29 @@ RUN has() { [[ " $PROVIDERS " == *" $1 "* ]]; } \
  && if has codex; then packages="$packages @openai/codex"; fi \
  && if has opencode; then packages="$packages opencode-ai"; fi \
  && npm install -g --no-fund --no-audit --loglevel=error $packages \
+ && for package in $packages; do \
+      dir=/usr/local/lib/node_modules/$package; \
+      for bin in $(jq -r '.bin | if type == "string" then . else .[] end' "$dir/package.json"); do \
+        if head -n 1 "$dir/$bin" | grep -q '^#!/usr/bin/env node\b'; then sed -i '1s|^#!/usr/bin/env node|#!/usr/local/bin/node|' "$dir/$bin"; fi; \
+        if head -n 1 "$dir/$bin" | grep -q '^#!.*env.*node'; then echo "$dir/$bin still runs the first node on PATH" >&2; exit 1; fi; \
+      done; \
+    done \
  && npm cache clean --force \
  && rm -rf /root/.npm /root/.cache /tmp/*
+
+# mise, for the toolchains agents install without root. They go in the /toolchains volume; mise itself is
+# updated only with the image, like the providers.
+RUN case "$TARGETARCH" in amd64) arch=x64 ;; arm64) arch=arm64 ;; esac \
+ && sums=$(curl -fsSL https://github.com/jdx/mise/releases/latest/download/SHASUMS256.txt) \
+ && file=$(grep -oE "mise-v[0-9.]+-linux-${arch}\$" <<< "$sums") \
+ && version=${file#mise-v} && version=${version%-linux-*} \
+ && curl -fsSL -o /usr/local/bin/mise "https://github.com/jdx/mise/releases/download/v${version}/${file}" \
+ && echo "$(awk -v f="./$file" '$2 == f { print $1 }' <<< "$sums")  /usr/local/bin/mise" | sha256sum -c - \
+ && chmod 755 /usr/local/bin/mise \
+ && install -d /usr/local/lib/mise \
+ && touch /usr/local/lib/mise/.disable-self-update \
+ && mise --version \
+ && rm -rf /root/.cache /root/.local
 
 # git: gh answers for github.com, so a `gh auth login` covers pushes; any owner may own /workspace repos.
 RUN git config --system credential.https://github.com.helper '' \
@@ -104,7 +130,7 @@ RUN git config --system credential.https://github.com.helper '' \
 # /etc/machine-info is writable the same way, for the entrypoint to set T3CODEBOX_NAME.
 RUN groupadd --gid 1000 t3codebox \
  && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/t3codebox --shell /bin/bash t3codebox \
- && install -d -o 1000 -g 1000 /workspace \
+ && install -d -o 1000 -g 1000 /workspace /toolchains \
  && install -d -m 755 /etc/t3codebox \
  && install -m 666 /etc/passwd /etc/t3codebox/passwd \
  && install -m 666 /etc/group /etc/t3codebox/group \
@@ -114,9 +140,22 @@ RUN groupadd --gid 1000 t3codebox \
 COPY rootfs/ /
 COPY Icon/final/adaptive/t3codebox-48.svg /usr/local/lib/t3codebox-dashboard/icon.svg
 
+# What every agent is told about the box: Claude Code and OpenCode read the file from /etc (see rootfs/etc),
+# Codex gets it as developer instructions. Interactive bash sources the missing-command hint too. Node and
+# Python, which the image has, go through rootfs/usr/local/lib/t3codebox/runtimes/runtime until mise has
+# shims for them, so a pinned version installs on first use there too.
+RUN install -D -m 644 /usr/local/share/t3codebox/agents.md /etc/claude-code/CLAUDE.md \
+ && install -d -m 755 /etc/codex \
+ && echo "developer_instructions = $(jq -Rs . /usr/local/share/t3codebox/agents.md)" > /etc/codex/config.toml \
+ && python3 -c 'import tomllib; tomllib.load(open("/etc/codex/config.toml", "rb"))' \
+ && echo '. /etc/profile.d/t3codebox-mise.sh' >> /etc/bash.bashrc \
+ && for name in node npm npx python python3 pip pip3; do ln -s runtime "/usr/local/lib/t3codebox/runtimes/$name"; done
+
 ENV T3CODEBOX_VERSION=${IMAGE_VERSION} \
     HOME=/home/t3codebox \
-    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/t3codebox/.local/bin \
+    PATH=/toolchains/shims:/usr/local/lib/t3codebox/runtimes:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/t3codebox/.local/bin \
+    MISE_DATA_DIR=/toolchains \
+    BASH_ENV=/etc/profile.d/t3codebox-mise.sh \
     LANG=C.UTF-8 \
     T3CODE_HOST=0.0.0.0 \
     T3CODE_PORT=3773 \

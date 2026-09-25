@@ -16,6 +16,7 @@ Unofficial, unaffiliated, self-proclaimed flagship container for [T3 Code](https
 
 - [x] Claude Code, Codex, Cursor, Grok Build and OpenCode, ready to sign in
 - [x] A real Chromium the agents drive, and you can watch and take over
+- [x] Go, Rust, Java, any Node or Python: agents install what a repo needs with mise, no root
 - [x] A phone-friendly dashboard for health, sign-ins, devices and skills
 - [x] New T3 Code release? New image, automatically; we check every 15 minutes
 - [x] Tested on amd64 and arm64 before anything ships
@@ -28,7 +29,7 @@ Unofficial, unaffiliated, self-proclaimed flagship container for [T3 Code](https
 
 | | |
 | --- | --- |
-| `ghcr.io/kristofk/t3codebox` | `t3 serve` from the official T3 Code release, with Claude Code, Codex, Cursor, Grok Build and OpenCode, `gh`, `git`, `ssh`, `ripgrep`, Node LTS and Python, plus a dashboard that shows the box's health and sign-ins. Runs as a non-root user and needs no Docker socket. |
+| `ghcr.io/kristofk/t3codebox` | `t3 serve` from the official T3 Code release, with Claude Code, Codex, Cursor, Grok Build and OpenCode, `gh`, `git`, `ssh`, `ripgrep`, Node LTS, Python, a C compiler and [mise](https://mise.jdx.dev) for any other language, plus a dashboard that shows the box's health and sign-ins. Runs as a non-root user and needs no Docker socket. |
 | `ghcr.io/kristofk/t3codebox-browser` | Chromium on a remote desktop you open in any browser ([linuxserver/chromium](https://docs.linuxserver.io/images/docker-chromium/)), password protected. All five agents get a `browser` tool (Playwright MCP) that drives it. |
 
 Both images support amd64 and arm64. A new build is released automatically when T3 Code publishes a stable release, and only after both architectures pass the tests.
@@ -136,6 +137,18 @@ docker exec t3codebox t3 project add /workspace/<repo>
 docker exec t3codebox bash -c 'for d in /workspace/*/.git; do t3 project add "${d%/.git}"; done'
 ```
 
+## Toolchains
+
+Agents install languages and tools with [mise](https://mise.jdx.dev), which needs no root: the container has no sudo and no `apt-get`. Every agent finds out about mise: Claude Code, Codex and OpenCode are told at the start of each thread, and in every agent's shell a missing command says how to install it.
+
+- A repository pins versions in `mise.toml` or `.tool-versions`. A pinned version that isn't installed yet installs on first use, so `go test` in a repo pinned to Go 1.23 just works, only slower the first time.
+- `mise.toml` files under `/workspace` are trusted without `mise trust`: agents run what a repository contains anyway.
+- `.nvmrc`, `.node-version`, `.python-version` and `.ruby-version` are ignored, as mise does by default. To follow them: `MISE_IDIOMATIC_VERSION_FILE_ENABLE_TOOLS=node,python,ruby` in `.env`.
+- The image's own Node and Python stay as they are, and the image's tools (Codex, OpenCode, the browser tool, the dashboard) always run on the image's Node, whatever a repository pins.
+- Installed toolchains live in the `t3codebox-toolchains` volume. `docker exec t3codebox mise prune` removes versions nothing uses any more; removing the volume removes them all, and they install again when needed.
+- A C compiler, `make`, `pkg-config` and the OpenSSL, zlib and libffi headers are in the image, for Rust and for native npm, pip and gem packages. Languages that build from source with more libraries (Erlang, PHP) need an image built on top of this one.
+- mise uses the box's GitHub login (`gh auth login` or `GH_TOKEN`) for GitHub's API. Your own mise settings go in `~/.config/mise/config.toml` (`docker exec t3codebox mise settings set ...`) and win over the image's `/etc/mise/config.toml`.
+
 ## The browser
 
 Open `https://<host>.<tailnet>.ts.net:3774` (or your proxy URL), sign in as `abc` with the browser password, and you see the Chromium the agents drive. It works from a phone. Sign in to sites there when an agent needs an account.
@@ -172,6 +185,7 @@ All in `.env` (see [`.env.example`](.env.example)):
 | `DASHBOARD_PASSWORD` | generated | Dashboard password |
 | `DASHBOARD` | on | `off`: no dashboard |
 | `T3CODE_TELEMETRY_ENABLED` | T3's default | `false` turns off T3's anonymous telemetry |
+| `MISE_IDIOMATIC_VERSION_FILE_ENABLE_TOOLS` | unset | `node,python,ruby`: mise also follows `.nvmrc`, `.python-version` and `.ruby-version` |
 
 Memory limit: uncomment `mem_limit` in `compose.yaml`. T3's own `T3CODE_*` variables work too; add them to the `environment:` list.
 
@@ -181,18 +195,19 @@ Memory limit: uncomment `mem_limit` in `compose.yaml`. T3's own `T3CODE_*` varia
 | --- | --- | --- |
 | `t3codebox-home` | `/home/t3codebox` | T3's state (`~/.t3`: threads, settings, paired devices), every provider login, `gh`, git config, SSH keys, the dashboard password and signed-in devices (`~/.t3codebox`) |
 | `t3codebox-workspace` | `/workspace` | Your repositories. The path is fixed: T3 stores projects by absolute path |
+| `t3codebox-toolchains` | `/toolchains` | The languages and tools agents installed with mise. Safe to delete: they install again when needed |
 | `t3codebox-browser` | `/config` in the browser | Chromium profile, cookies, the browser password |
 
-Home and workspace are separate so you can reset logins without losing repositories, or put repositories on a big disk without the secrets. Back up the home volume like a password store.
+Home, workspace and toolchains are separate so you can reset logins without losing repositories, put repositories and toolchains on a big disk without the secrets, and back up home without gigabytes of compilers. Back up the home volume like a password store.
 
 ### Bind mounts and your own user id
 
-To keep the data in plain folders, change the `volumes:` lines in `compose.yaml` to `./home:/home/t3codebox` and `./workspace:/workspace` in the `t3codebox` service, and `./browser:/config` in the `browser` service.
+To keep the data in plain folders, change the `volumes:` lines in `compose.yaml` to `./home:/home/t3codebox`, `./workspace:/workspace` and `./toolchains:/toolchains` in the `t3codebox` service, and `./browser:/config` in the `browser` service.
 
 Create the folders first and give them to the ids in `PUID`/`PGID`:
 
 ```sh
-mkdir -p home workspace browser && sudo chown 1000:1000 home workspace browser
+mkdir -p home workspace toolchains browser && sudo chown 1000:1000 home workspace toolchains browser
 ```
 
 The image runs as `PUID:PGID` (compose `user:`), so `docker exec` commands run as the same user and never leave root-owned files behind. Named volumes only work with the default 1000:1000; for other ids use bind mounts.
@@ -202,6 +217,8 @@ The image runs as `PUID:PGID` (compose `user:`), so `docker exec` commands run a
 ```sh
 docker compose pull && docker compose up -d
 ```
+
+A `compose.yaml` downloaded before the toolchains volume existed lacks it: toolchains then install inside the container and are gone after the next update, and `docker logs t3codebox` warns about it. Download `compose.yaml` again, or add the `toolchains` lines from the current one.
 
 Tags, the same on both images:
 
@@ -231,7 +248,7 @@ How it's built and why: [docs/](docs/README.md).
 
 ## How releases are made
 
-- Every 15 minutes CI checks for a new stable T3 Code release. A new one is built with the newest version of every other component, on native amd64 and arm64 runners, and tested on each: non-root user, health endpoint, T3 version, every provider CLI, pairing link, state across a restart, the dashboard's sign-in, status and settings, no sudo and no Docker socket, the browser and an agent-side connection to it. Only then are the tags moved.
+- Every 15 minutes CI checks for a new stable T3 Code release. A new one is built with the newest version of every other component, on native amd64 and arm64 runners, and tested on each: non-root user, health endpoint, T3 version, every provider CLI, pairing link, state across a restart, the dashboard's sign-in, status and settings, toolchains with mise, no sudo and no Docker socket, the browser and an agent-side connection to it. Only then are the tags moved.
 - A daily Trivy scan checks the published images. A critical finding with a fix triggers a rebuild; a high one opens an issue.
 - Every change merged to `main` goes through the same build and tests and is published as `edge` only; `latest` and the version tags wait for a release.
 - T3 Code preview and nightly builds are not followed.

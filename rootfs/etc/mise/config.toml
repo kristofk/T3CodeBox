@@ -1,0 +1,9 @@
+# T3CodeBox's settings for mise. Settings of your own go in ~/.config/mise/config.toml
+# (`mise settings set <name> <value>`) and win over these.
+[settings]
+# Agents run what a repository contains anyway, so its mise.toml needs no `mise trust` either.
+trusted_config_paths = ["/workspace"]
+
+[settings.github]
+# The GitHub login the rest of the box uses, GH_TOKEN included, for mise's GitHub API calls.
+credential_command = "gh auth token"

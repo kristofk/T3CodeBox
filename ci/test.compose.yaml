@@ -12,5 +12,7 @@ volumes:
     name: t3codebox-test-home
   workspace:
     name: t3codebox-test-workspace
+  toolchains:
+    name: t3codebox-test-toolchains
   browser:
     name: t3codebox-test-browser

@@ -1,0 +1,20 @@
+#!/bin/bash
+# node, npm, npx, python, python3, pip and pip3 until mise has installed a version of that language; then
+# mise's shims come first on PATH and this isn't reached. A version the directory pins installs and runs
+# through mise; with nothing pinned, the image's own runs.
+name=${0##*/}
+case $name in
+  node | npm | npx) tool=node ;;
+  *) tool=python ;;
+esac
+# T3CODEBOX_RUNTIME: a pinned version without this command (mise exec found this file again) takes the
+# image's, rather than looping.
+if [ "${T3CODEBOX_RUNTIME:-}" != "$name" ] && [ -n "$(mise current "$tool" 2>/dev/null)" ]; then
+  T3CODEBOX_RUNTIME=$name exec mise exec -- "$name" "$@"
+fi
+PATH=${PATH//\/usr\/local\/lib\/t3codebox\/runtimes:/}
+if command -v "$name" >/dev/null; then
+  exec "$name" "$@"
+fi
+# Not in the image either (python, pip): bash's missing-command hint.
+"$name" "$@"

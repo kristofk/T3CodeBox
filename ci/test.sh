@@ -57,7 +57,7 @@ check "environment label is T3CODEBOX_NAME" bash -c \
   "$DOCKER exec $c curl -fsS http://127.0.0.1:3773/.well-known/t3/environment | jq -e --arg name \"\$T3CODEBOX_NAME\" '.label == \$name'"
 check "t3 --version is $version" bash -c "$DOCKER exec $c t3 --version | grep -q 'v$version\$'"
 
-for tool in claude codex cursor-agent grok opencode gh node skills; do
+for tool in claude codex cursor-agent grok opencode gh node skills mise cc; do
   if v=$(in_t3 "$tool" --version 2>&1 | head -n 1); then
     echo "PASS $tool --version: $v" | tee -a "$results"
     echo "$tool $v" >> "$versions"
@@ -116,6 +116,32 @@ check "dashboard stops a sign-in with its process, and does not count it as a ru
 check "dashboard refuses a GitHub sign-in while GH_TOKEN is set" in_t3 bash -c \
   'if [ -z "${GH_TOKEN:-}" ]; then echo "GH_TOKEN not set here; nothing to check"; exit 0; fi
    [ "$(curl -s -o /dev/null -w %{http_code} -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "{\"provider\":\"github\"}" http://127.0.0.1:3772/api/signin)" = 409 ]'
+check "toolchains volume mounted at /toolchains, and no warning about it" bash -c \
+  "$DOCKER exec $c awk '\$5 == \"/toolchains\" { found = 1 } END { exit !found }' /proc/self/mountinfo && ! $DOCKER logs $c 2>&1 | grep 'toolchains is not a volume'"
+check "without the toolchains volume the entrypoint warns" bash -c \
+  "$DOCKER run --rm $LOCAL_IMAGE true 2>&1 | grep -q '/toolchains is not a volume'"
+check "mise settings: /workspace trusted, GitHub token from gh" in_t3 bash -c \
+  '[ "$(mise settings get trusted_config_paths)" = "[\"/workspace\"]" ] && [ "$(mise settings get github.credential_command)" = "gh auth token" ]'
+check "C compiler and the OpenSSL, zlib and libffi headers" in_t3 bash -c \
+  'pkg-config --exists openssl zlib libffi && printf "#include <openssl/ssl.h>\n#include <zlib.h>\n#include <ffi.h>\nint main(void) { return 0; }\n" | cc -x c - -o /tmp/cc-test && /tmp/cc-test'
+check "a project's pinned Node installs on first use into /toolchains, with its env and no mise trust" in_t3 bash -c \
+  'mkdir -p /workspace/mise-test && cd /workspace/mise-test && printf "[tools]\nnode = \"22\"\n\n[env]\nT3CODEBOX_TEST = \"trusted\"\n" > mise.toml \
+   && [ "$(node -p "process.versions.node.split(\".\")[0] + \" \" + process.env.T3CODEBOX_TEST")" = "22 trusted" ] \
+   && [ "$(command -v node)" = /toolchains/shims/node ] && ls /toolchains/installs/node'
+check "outside a pinned project, node is the image's Node" in_t3 bash -c \
+  'cd /workspace && [ "$(node --version)" = "$(/usr/local/bin/node --version)" ] && [ "$(/usr/local/bin/node --version | cut -d. -f1)" != v22 ]'
+check "the image's Node tools and the dashboard run the image's Node, in a project pinned to another" in_t3 bash -c \
+  'cd /workspace/mise-test && for tool in codex playwright-mcp skills; do head -n 1 "$(readlink -f "$(command -v "$tool")")" | grep -qx "#!/usr/local/bin/node" && "$tool" --version >/dev/null || { echo "$tool"; exit 1; }; done \
+   && [ "$(readlink "/proc/$(pgrep -f "^/usr/local/bin/node /usr/local/lib/t3codebox-dashboard/server.js" | head -n 1)/exe")" = /usr/local/bin/node ]'
+check "a pinned tool that isn't installed installs on first use when its command is run" in_t3 bash -c \
+  'mkdir -p /workspace/mise-test-shfmt && cd /workspace/mise-test-shfmt && printf "[tools]\nshfmt = \"3.10.0\"\n" > mise.toml \
+   && [ "$(bash -c "shfmt --version")" = v3.10.0 ] && [ "$(command -v shfmt)" = /toolchains/shims/shfmt ]'
+check "a missing command points to mise, in bash -c and bash -lc" in_t3 bash -c \
+  'for flag in -c -lc; do out=$(cd /tmp && bash "$flag" "cargo --version" 2>&1); [ $? = 127 ] && grep -q "mise use rust@latest" <<< "$out" || { echo "bash $flag: $out"; exit 1; }; done'
+check "agents are told about mise: Claude Code's file, OpenCode's and Codex's resolved config" in_t3 bash -c \
+  'cd /tmp && grep -q "mise use" /etc/claude-code/CLAUDE.md \
+   && timeout 60 opencode debug config | grep -q /usr/local/share/t3codebox/agents.md \
+   && timeout 60 codex debug prompt-input hello | grep -q "mise use"'
 check "no sudo and no Docker socket" in_t3 bash -c '! command -v sudo && [ ! -e /var/run/docker.sock ]'
 check "custom uid has a user name, in docker exec too" bash -c \
   "$DOCKER rm -f t3codebox-test-uid >/dev/null 2>&1; $DOCKER run -d --name t3codebox-test-uid --user 4242:4242 $LOCAL_IMAGE sleep infinity >/dev/null && sleep 2 \

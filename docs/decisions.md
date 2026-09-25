@@ -26,9 +26,10 @@ repository keeps the capitals; GitHub URLs ignore case. Our own settings are upp
 3. **Non-root, no sudo, no Docker socket.** The image runs as its own user. Compose's `user:` sets the uid, and
    nss_wrapper gives any uid a user name, so `docker exec` works as the same user and leaves no root-owned
    files in home.
-4. **Two volumes.** Home holds state and logins; `/workspace` holds repositories. They have different sizes,
-   sensitivity and lifecycles: logins can be reset without losing repositories, and repositories can go on
-   a big disk without the secrets. The `/workspace` path never changes, because T3 stores projects by
+4. **Three volumes.** Home holds state and logins; `/workspace` holds repositories; `/toolchains` holds
+   what agents install with mise. They have different sizes, sensitivity and lifecycles: logins can be
+   reset without losing repositories, repositories and toolchains can go on a big disk without the secrets,
+   and toolchains can be deleted and installed again. The `/workspace` path never changes, because T3 stores projects by
    absolute path.
 5. **Loopback ports.** Every port is published on `127.0.0.1` only, with HTTPS in front from the host's
    `tailscale serve` or a reverse proxy. Plain LAN access is a documented edit of the `ports:` lines.
@@ -98,6 +99,30 @@ repository keeps the capitals; GitHub URLs ignore case. Our own settings are upp
     - OpenCode keeps its terminal command, because its sign-in is a different menu per provider (#37).
     - API keys aren't typed into the page: they're long-lived secrets and stay in `.env`.
     - GitHub isn't offered while `GH_TOKEN` is set, because gh uses the token and won't store a sign-in.
+
+## Toolchains (#11)
+
+26. **mise installs what agents need, without root.** Considered and not used: asdf (slower, a plugin per
+    language), Nix and devbox (large, awkward without root), Homebrew on Linux (its own prefix, compiles
+    often). mise reads `.tool-versions` too, downloads prebuilt Node, Python, Ruby, Go and Java, and its
+    registry covers many CLIs, which matters where nobody can `apt-get`.
+27. **mise's defaults, with two exceptions.** Pinned versions install on first use and `.nvmrc`-style files
+    are ignored, as mise does; `MISE_IDIOMATIC_VERSION_FILE_ENABLE_TOOLS` turns those on. The exceptions:
+    `mise.toml` files under `/workspace` are trusted, because an agent runs the repository's code anyway,
+    and mise asks `gh` for a GitHub token, so `GH_TOKEN` counts too.
+28. **Shims first on `PATH`, the image's tools on the image's Node.** A repository's pinned Node or Python
+    applies to what agents run; the image's Node tools and the dashboard run `/usr/local/bin/node` by path,
+    so a pin never breaks Codex or the browser tool. Shims last would have silently ignored exactly those
+    pins. So would a fresh volume, which has no shims yet: a stand-in for Node and Python and the
+    missing-command hint install a pinned version on first use there too.
+29. **A C compiler and a few headers in the image,** about 250 MB: Rust can't link without `cc`, and native
+    packages need OpenSSL, zlib and libffi. Erlang and PHP, which build from source with many more
+    libraries, are for images built on this one (#13).
+30. **No toolchains in the image.** Everything beyond the image's Node and Python installs on first use into
+    the volume, so the image and its release scope stay as they were.
+31. **Agents are told in files the image owns** (`/etc/claude-code`, `/etc/opencode`, `/etc/codex`), never
+    in the user's own instruction files in home. Cursor and Grok Build have no such file, so a missing
+    command in bash says how to install it, for every agent.
 
 ## Documentation
 
