@@ -6,7 +6,7 @@ FROM lscr.io/linuxserver/chromium:latest
 ARG IMAGE_VERSION=dev
 
 LABEL org.opencontainers.image.title="T3CodeBox browser" \
-      org.opencontainers.image.description="Chromium remote desktop that T3CodeBox agents drive through DevTools" \
+      org.opencontainers.image.description="The Chromium that T3CodeBox's agents drive while you watch from the couch. Unofficial, unaffiliated." \
       org.opencontainers.image.source="https://github.com/kristofk/T3CodeBox" \
       org.opencontainers.image.url="https://github.com/kristofk/T3CodeBox" \
       org.opencontainers.image.licenses="MIT" \
