@@ -88,10 +88,10 @@ check "claude auth status names ANTHROPIC_API_KEY (the dashboard's billing warni
 check "dashboard sets the git author" in_t3 bash -c \
   'curl -fsS -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "{\"name\":\"T3CodeBox Test\",\"email\":\"test@t3codebox.invalid\"}" http://127.0.0.1:3772/api/git >/dev/null \
    && [ "$(git config --global user.name)" = "T3CodeBox Test" ] && [ "$(git config --global user.email)" = test@t3codebox.invalid ]'
-check "dashboard creates, lists and revokes a pairing link" in_t3 bash -c \
+check "dashboard creates a pairing link with its QR code, lists it and revokes it" in_t3 bash -c \
   'listed() { t3 auth pairing list --json | jq -e "any(.[]; .label == \"dashboard-test\")" >/dev/null; }
    id=$(curl -fsS -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "{\"baseUrl\":\"https://t3codebox.test\",\"ttl\":\"15m\",\"label\":\"dashboard-test\"}" http://127.0.0.1:3772/api/pairing \
-     | jq -er "select(.pairing.pairUrl | startswith(\"https://t3codebox.test/pair\")) | .pairing.id") && listed \
+     | jq -er "select((.pairing.pairUrl | startswith(\"https://t3codebox.test/pair\")) and (.pairing.qr | length >= 21 and (map(length) | unique == [length]))) | .pairing.id") && listed \
    && curl -fsS -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "{\"id\":\"$id\"}" http://127.0.0.1:3772/api/pairing/revoke && ! listed'
 check "dashboard installs and removes a skill (anthropics/skills internal-comms) with the skills CLI" in_t3 bash -c \
   'job() { for i in $(seq 180); do j=$(curl -fsS -b /tmp/dashboard-cookies "http://127.0.0.1:3772/api/jobs/$1"); [ "$(jq -r .job.state <<< "$j")" != running ] && break; sleep 1; done; jq -r ".job.error // empty" <<< "$j"; [ "$(jq -r .job.state <<< "$j")" = done ]; }

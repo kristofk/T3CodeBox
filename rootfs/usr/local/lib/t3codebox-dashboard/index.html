@@ -77,6 +77,7 @@ label { font-size: .85rem; color: var(--muted); }
 .result { margin-top: .75rem; padding: .6rem .75rem; border: 1px solid var(--border); border-radius: 8px; }
 a.button { font-size: .9rem; color: var(--accent); border: 1px solid var(--border); border-radius: 7px; padding: .25rem .7rem; text-decoration: none; }
 button.danger { color: var(--bad); }
+.qr { display: block; width: 15rem; max-width: 100%; height: auto; margin: .5rem 0; border-radius: 6px; }
 </style>
 </head>
 <body>
@@ -546,6 +547,28 @@ function renderAccess({ sessions, pairings }) {
   tick();
 }
 
+// A QR code from the server's rows of 0 and 1: dark on white in any color scheme, with the standard
+// four-module margin, drawn as one SVG path.
+function qrSvg(rows) {
+  const ns = "http://www.w3.org/2000/svg";
+  const size = rows.length + 8;
+  const svg = document.createElementNS(ns, "svg");
+  for (const [name, value] of [["viewBox", `0 0 ${size} ${size}`], ["class", "qr"], ["role", "img"], ["aria-label", "QR code of the pairing link"], ["shape-rendering", "crispEdges"]]) {
+    svg.setAttribute(name, value);
+  }
+  const background = document.createElementNS(ns, "rect");
+  for (const [name, value] of [["width", size], ["height", size], ["fill", "#fff"]]) background.setAttribute(name, value);
+  let d = "";
+  rows.forEach((row, y) => {
+    for (let x = 0; x < row.length; x++) if (row[x] === "1") d += `M${x + 4} ${y + 4}h1v1h-1z`;
+  });
+  const modules = document.createElementNS(ns, "path");
+  modules.setAttribute("d", d);
+  modules.setAttribute("fill", "#000");
+  svg.append(background, modules);
+  return svg;
+}
+
 // New pairing links. The address defaults to this page's host with the next port (the dashboard's 3772
 // next to T3's 3773, 4772 next to 4773) until one is used; then that one is remembered.
 const BASE_URL_KEY = "t3codebox.pairBaseUrl";
@@ -562,15 +585,17 @@ $("#pair-form").addEventListener("submit", async (event) => {
     const { pairing } = await api("api/pairing", { baseUrl, ttl: $("#pair-ttl").value, label: $("#pair-label").value });
     localStorage.setItem(BASE_URL_KEY, baseUrl);
     $("#pair-label").value = "";
-    result.replaceChildren(
+    result.replaceChildren(h("div", null,
       h("p", null, h("strong", null, `Pairing link for ${pairing.label}`), muted(` (single use, until ${new Date(pairing.expiresAt).toLocaleString()})`)),
+      pairing.qr && qrSvg(pairing.qr),
+      pairing.qr && h("p", { class: "note" }, "Scan it with the T3 app or the phone's camera, or use the link:"),
       commandLine(pairing.pairUrl),
       h("div", { class: "actions" },
         h("a", { class: "button", href: pairing.pairUrl, target: "_blank", rel: "noopener noreferrer" }, "Open"),
         pairing.credential && muted(`Code ${pairing.credential}`),
       ),
       h("p", { class: "note" }, "Shown only now. The link is a password: open it on the device to pair, and do not paste it into chats."),
-    );
+    ));
     result.hidden = false;
     loadAccess();
   } catch (error) {
