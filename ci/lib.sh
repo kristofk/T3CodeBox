@@ -56,3 +56,15 @@ next_build_number() {
   done
   echo "$n"
 }
+
+# --annotation flags for `imagetools create`, copied from one architecture's OCI labels. GHCR shows the
+# multi-arch index's description on the package page, not the labels of the images in it.
+index_annotations() {
+  local labels key value
+  labels=$($DOCKER buildx imagetools inspect "$1" --format '{{json .Image.Config.Labels}}')
+  for key in description source licenses; do
+    value=$(jq -r --arg k "org.opencontainers.image.$key" '.[$k] // empty' <<< "$labels")
+    [ -n "$value" ] && echo "--annotation=index:org.opencontainers.image.$key=$value"
+  done
+  return 0
+}

@@ -13,7 +13,7 @@ ARG TARGETARCH
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
 LABEL org.opencontainers.image.title="T3CodeBox" \
-      org.opencontainers.image.description="Container image for the T3 Code server and its coding agents" \
+      org.opencontainers.image.description="Unofficial, unaffiliated, self-proclaimed flagship container for T3 Code that just works." \
       org.opencontainers.image.source="https://github.com/kristofk/T3CodeBox" \
       org.opencontainers.image.url="https://github.com/kristofk/T3CodeBox" \
       org.opencontainers.image.licenses="MIT" \

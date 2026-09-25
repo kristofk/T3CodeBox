@@ -13,11 +13,13 @@ for a in "${archs[@]}"; do
 done
 
 combine() {
-  local name=$1 key=$2 sources=()
+  local name=$1 key=$2 sources=() flags annotations=()
   for a in "${archs[@]}"; do
     sources+=("$name@$(cat "$OUT/digest-$key-$a")")
   done
-  $DOCKER buildx imagetools create -t "$name:edge" "${sources[@]}"
+  flags=$(index_annotations "${sources[0]}")
+  [ -n "$flags" ] && mapfile -t annotations <<< "$flags"
+  $DOCKER buildx imagetools create -t "$name:edge" "${annotations[@]}" "${sources[@]}"
 }
 combine "$IMAGE" t3codebox
 combine "$BROWSER_IMAGE" browser
