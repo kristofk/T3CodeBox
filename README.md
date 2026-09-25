@@ -86,7 +86,7 @@ docker restart t3codebox
 A status page for the box where settings can also be changed, made for phones as much as for desktops. Open `https://<host>.<tailnet>.ts.net:3772` (or your proxy URL) and sign in with the dashboard password.
 
 - **Health**, refreshed every 5 seconds: T3 up or down, the image, T3 and provider versions, uptime, CPU and memory against the container's limits, whether the home and workspace folders are mounted (a folder that is not mounted loses its data when the container is recreated), free space, running agents and the browser. Folder sizes on request. **Restart T3** restarts the container, for example after `t3 connect login`; it needs a restart policy such as compose's `restart: unless-stopped`.
-- **Providers**: whether Claude Code, Codex, Cursor, Grok Build, OpenCode and GitHub are signed in, how and as whom, with the sign-in command for the ones that are not. The GitHub card sets the commit author (`git config --global user.name` and `user.email`).
+- **Providers**: whether Claude Code, Codex, Cursor, Grok Build, OpenCode and GitHub are signed in, how and as whom. **Sign in** runs the provider's headless sign-in and shows the link to open (with a QR code, for a phone) and the code to enter there; for Claude Code, paste back the code its page shows. OpenCode signs in through a menu per provider, so its card shows the command instead. The GitHub card sets the commit author (`git config --global user.name` and `user.email`).
 - **T3 access**: paired devices with a countdown to their expiry, and unused pairing links, each with a Revoke button. **Pair a device** creates a link for T3's address and a validity you choose, and shows it as a QR code: scan it with the phone, or open the dashboard on the phone and tap the link.
 - **Skills**: the skills installed for each agent, the ones synced from claude.ai and Codex's built-in ones. Add skills from a GitHub repository (`owner/repo`, for example `mattpocock/skills` or `anthropics/skills`): **Show skills** lists what it has, **Install** puts one into every agent's user skills with the [`skills`](https://www.npmjs.com/package/skills) CLI, which is in the image. **Remove** takes one out again. `skills` asks skills.sh for the security checks it shows and reports installs to it; add `DO_NOT_TRACK=1` to the `t3codebox` service's `environment:` to turn both off.
 - **Dashboard devices**: every browser signed in to the dashboard, each with a Sign out button.
@@ -101,13 +101,13 @@ The dashboard pairs devices and installs skills, so its password is worth as muc
 
 ## Sign in to the agents
 
-Each provider signs in the way its own CLI does; T3 passes the container environment to them. Run the command, open the printed URL on any device, and paste the code back if asked. Logins live in the home volume and survive updates.
+Each provider signs in the way its own CLI does; T3 passes the container environment to them. The easiest way is **Sign in** on the dashboard. Or run the command, open the printed URL on any device, and paste the code back if asked. Logins live in the home volume and survive updates.
 
 | Provider | Headless sign-in | Or set in `.env` |
 | --- | --- | --- |
 | Claude Code | `docker exec -it t3codebox claude auth login` | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY` |
 | Codex | `docker exec -it t3codebox codex login --device-auth` (turn on device code sign-in in ChatGPT's security settings first) | `OPENAI_API_KEY` |
-| Cursor | | `CURSOR_API_KEY` |
+| Cursor | `docker exec -it -e NO_OPEN_BROWSER=1 t3codebox cursor-agent login` | `CURSOR_API_KEY` |
 | Grok Build | `docker exec -it t3codebox grok login --device-auth` | `XAI_API_KEY` |
 | OpenCode | `docker exec -it t3codebox opencode auth login` | the provider's usual variable |
 | GitHub (`gh`, pull requests, `git push`) | `docker exec -it t3codebox gh auth login` | `GH_TOKEN` |

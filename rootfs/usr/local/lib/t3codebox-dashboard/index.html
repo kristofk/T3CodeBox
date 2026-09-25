@@ -78,6 +78,8 @@ label { font-size: .85rem; color: var(--muted); }
 a.button { font-size: .9rem; color: var(--accent); border: 1px solid var(--border); border-radius: 7px; padding: .25rem .7rem; text-decoration: none; }
 button.danger { color: var(--bad); }
 .qr { display: block; width: 15rem; max-width: 100%; height: auto; margin: .5rem 0; border-radius: 6px; }
+.big-code { font-size: 1.25rem; letter-spacing: .06em; padding: .2rem .5rem; }
+.signin:empty { display: none; }
 </style>
 </head>
 <body>
@@ -376,7 +378,7 @@ $("#sizes-button").addEventListener("click", async (event) => {
 
 // ---- Providers: on open and on Refresh ----
 
-async function copy(text, button) {
+async function copy(text, button, label = "Copy") {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
@@ -389,7 +391,12 @@ async function copy(text, button) {
     area.remove();
   }
   button.textContent = "Copied";
-  setTimeout(() => (button.textContent = "Copy"), 1500);
+  setTimeout(() => (button.textContent = label), 1500);
+}
+
+function copyButton(text, label = "Copy") {
+  const button = h("button", { type: "button", onclick: () => copy(text, button, label) }, label);
+  return button;
 }
 
 function commandLine(command) {
@@ -451,9 +458,81 @@ function providerCard(p, git) {
     p.version && h("p", { class: "muted" }, `Version ${p.version}`),
     p.warnings.length > 0 && h("ul", { class: "warnings" }, p.warnings.map((warning) => h("li", null, warning))),
     p.notes.map((note) => h("p", { class: "note" }, note)),
-    p.signIn && commandLine(p.signIn),
+    p.canSignIn && h("div", { class: "actions", "data-signin-start": p.id }, h("button", { class: "primary", type: "button", onclick: () => startSignIn(p.id) }, "Sign in")),
+    h("div", { class: "signin", "data-signin": p.id }),
+    p.signIn && (p.canSignIn ? h("details", null, h("summary", null, "Or sign in from a terminal"), commandLine(p.signIn)) : commandLine(p.signIn)),
     p.id === "github" && git && gitAuthor(git),
   );
+}
+
+async function startSignIn(id) {
+  try {
+    watchJob((await api("api/signin", { provider: id })).job);
+  } catch (error) {
+    if (!(error instanceof SignedOut)) document.querySelector(`[data-signin="${id}"]`)?.replaceChildren(h("p", { class: "bad" }, error.message));
+  }
+}
+
+// Claude's sign-in page ends with a code to paste back into the waiting `claude auth login`.
+function pasteForm(job) {
+  const input = h("input", { autocomplete: "off", autocapitalize: "off", spellcheck: "false", "aria-label": "Code from the sign-in page", placeholder: "Code from the sign-in page" });
+  const error = h("p", { class: "bad", hidden: true });
+  return h("form", { onsubmit: async (event) => {
+    event.preventDefault();
+    showError(error, "");
+    try {
+      await api("api/signin/code", { id: job.id, code: input.value });
+      input.value = "";
+      input.disabled = true;
+    } catch (failure) {
+      if (!(failure instanceof SignedOut)) showError(error, failure.message);
+    }
+  } },
+    h("label", null, "After signing in there, paste the code the page shows:"),
+    h("div", { class: "actions" }, input, h("button", { class: "primary", type: "submit" }, "Send")),
+    error,
+  );
+}
+
+// A sign-in inside its provider's card: the link (and a QR code, to sign in on a phone), the code to
+// enter there, a field for Claude's pasted code, and Cancel. Redrawn only when something changes, so
+// what is typed into the field and the open sections survive the polling.
+function renderSignIn(job) {
+  const slot = document.querySelector(`[data-signin="${job.kind.slice("signin:".length)}"]`);
+  if (!slot) return;
+  const key = JSON.stringify([job.id, job.state, job.prompt?.url, job.prompt?.code, job.prompt?.pasteWanted, job.error]);
+  if (slot.dataset.key === key) {
+    const log = slot.querySelector("pre.log");
+    if (log) log.textContent = job.lines.join("\n");
+    return;
+  }
+  slot.dataset.key = key;
+  const prompt = job.prompt || {};
+  const running = job.state === "running";
+  const start = document.querySelector(`[data-signin-start="${job.kind.slice("signin:".length)}"]`);
+  if (start) start.hidden = running;
+  const state = running ? muted(prompt.url ? "waiting for the sign-in in the browser…" : "starting…")
+    : job.state === "done" ? ok("signed in")
+    : job.state === "stopped" ? muted("cancelled")
+    : bad(`failed: ${job.error}`);
+  const cancel = h("button", { type: "button", onclick: async () => {
+    cancel.disabled = true;
+    try {
+      await api("api/jobs/stop", { id: job.id });
+    } catch {}
+  } }, "Cancel");
+  slot.replaceChildren(h("div", { class: "result" },
+    h("p", null, h("strong", null, job.title), " ", state),
+    running && prompt.url && h("div", { class: "actions" },
+      h("a", { class: "button", href: prompt.url, target: "_blank", rel: "noopener noreferrer" }, "Open the sign-in page"),
+      copyButton(prompt.url, "Copy link"),
+    ),
+    running && prompt.code && h("p", null, "There, enter this code: ", h("code", { class: "big-code" }, prompt.code)),
+    running && prompt.pasteWanted && pasteForm(job),
+    running && prompt.qr && h("details", null, h("summary", null, "QR code, to sign in on a phone"), qrSvg(prompt.qr, "QR code of the sign-in link")),
+    running && h("div", { class: "actions" }, cancel),
+    job.lines.length > 0 && h("details", null, h("summary", null, "Output"), h("pre", { class: "log" }, job.lines.join("\n"))),
+  ));
 }
 
 async function loadProviders() {
@@ -549,11 +628,11 @@ function renderAccess({ sessions, pairings }) {
 
 // A QR code from the server's rows of 0 and 1: dark on white in any color scheme, with the standard
 // four-module margin, drawn as one SVG path.
-function qrSvg(rows) {
+function qrSvg(rows, label = "QR code of the pairing link") {
   const ns = "http://www.w3.org/2000/svg";
   const size = rows.length + 8;
   const svg = document.createElementNS(ns, "svg");
-  for (const [name, value] of [["viewBox", `0 0 ${size} ${size}`], ["class", "qr"], ["role", "img"], ["aria-label", "QR code of the pairing link"], ["shape-rendering", "crispEdges"]]) {
+  for (const [name, value] of [["viewBox", `0 0 ${size} ${size}`], ["class", "qr"], ["role", "img"], ["aria-label", label], ["shape-rendering", "crispEdges"]]) {
     svg.setAttribute(name, value);
   }
   const background = document.createElementNS(ns, "rect");
@@ -634,9 +713,15 @@ function skillList(list, installed) {
 
 const watching = new Set();
 
-function renderJob(job) {
+function renderSkillsJob(job) {
   const panel = $("#skill-job");
-  const state = job.state === "running" ? muted("running…") : job.state === "done" ? ok("done") : bad(`failed: ${job.error}`);
+  const state = job.state === "running" ? muted("running…") : job.state === "done" ? ok("done") : job.state === "stopped" ? muted("stopped") : bad(`failed: ${job.error}`);
+  const stop = h("button", { type: "button", onclick: async () => {
+    stop.disabled = true;
+    try {
+      await api("api/jobs/stop", { id: job.id });
+    } catch {}
+  } }, "Stop");
   const result = job.state !== "done" || !job.result ? null
     : job.result.action === "list" ? skillChoices(job.result)
     : job.result.action === "install" ? job.result.installed.map((s) => h("p", null,
@@ -644,7 +729,7 @@ function renderJob(job) {
         s.security && muted(` Security checks: Gen ${s.security.gen || "?"}, Socket ${s.security.socket || "?"}, Snyk ${s.security.snyk || "?"}.`)))
     : h("p", null, `${job.result.folder} removed.`);
   panel.replaceChildren(h("div", null,
-    h("div", null, h("strong", null, job.title), " ", state),
+    h("div", { class: "actions" }, h("strong", null, job.title), state, job.state === "running" && stop),
     result,
     job.lines.length > 0 && h("details", { open: job.state === "running" ? true : null }, h("summary", null, "Output"), h("pre", { class: "log" }, job.lines.join("\n"))),
   ));
@@ -665,7 +750,8 @@ async function watchJob(job) {
   watching.add(job.id);
   try {
     while (true) {
-      renderJob(job);
+      if (job.kind === "skills") renderSkillsJob(job);
+      else if (job.kind.startsWith("signin:")) renderSignIn(job);
       if (job.state !== "running") break;
       await sleep(1000);
       try {
@@ -675,7 +761,8 @@ async function watchJob(job) {
         await sleep(2000);
       }
     }
-    if (job.state === "done" && job.result?.action !== "list") loadSkills();
+    if (job.kind === "skills" && job.state === "done" && job.result?.action !== "list") loadSkills();
+    if (job.kind.startsWith("signin:") && job.state === "done") loadProviders();
   } finally {
     watching.delete(job.id);
   }

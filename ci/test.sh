@@ -100,6 +100,22 @@ check "dashboard installs and removes a skill (anthropics/skills internal-comms)
    && test -f ~/.agents/skills/internal-comms/SKILL.md && test -L ~/.claude/skills/internal-comms \
    && curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/skills | jq -e "any(.installed[]; .folder == \"internal-comms\")" >/dev/null \
    && job "$(start remove "{\"folder\":\"internal-comms\"}")" && test ! -e ~/.agents/skills/internal-comms'
+check "dashboard signs in to Claude: sign-in link shown, the pasted code reaches claude, Claude's answer comes back" in_t3 bash -c \
+  'job() { curl -fsS -b /tmp/dashboard-cookies "http://127.0.0.1:3772/api/jobs/$1"; }
+   id=$(curl -fsS -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "{\"provider\":\"claude\"}" http://127.0.0.1:3772/api/signin | jq -r .job.id)
+   for i in $(seq 30); do job "$id" | jq -e ".job.prompt.pasteWanted and (.job.prompt.url | startswith(\"https://claude.com/cai/oauth/authorize\"))" >/dev/null && break; sleep 1; done
+   curl -fsS -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "{\"id\":\"$id\",\"code\":\"t3codebox-test-code#state\"}" http://127.0.0.1:3772/api/signin/code
+   for i in $(seq 60); do state=$(job "$id" | jq -r .job.state); [ "$state" != running ] && break; sleep 1; done
+   job "$id" | jq -r ".job.error // empty"; [ "$state" = failed ] && ! claude auth status >/dev/null'
+check "dashboard stops a sign-in with its process, and does not count it as a running agent" in_t3 bash -c \
+  'id=$(curl -fsS -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "{\"provider\":\"claude\"}" http://127.0.0.1:3772/api/signin | jq -r .job.id)
+   for i in $(seq 30); do pgrep -f "claude [a]uth login" >/dev/null && break; sleep 1; done
+   curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/status | jq -e ".agents.claude == 0" >/dev/null \
+   && curl -fsS -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "{\"id\":\"$id\"}" http://127.0.0.1:3772/api/jobs/stop \
+   && for i in $(seq 20); do [ "$(curl -fsS -b /tmp/dashboard-cookies "http://127.0.0.1:3772/api/jobs/$id" | jq -r .job.state)" = stopped ] && ! pgrep -f "claude [a]uth login" >/dev/null && exit 0; sleep 1; done; exit 1'
+check "dashboard refuses a GitHub sign-in while GH_TOKEN is set" in_t3 bash -c \
+  'if [ -z "${GH_TOKEN:-}" ]; then echo "GH_TOKEN not set here; nothing to check"; exit 0; fi
+   [ "$(curl -s -o /dev/null -w %{http_code} -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "{\"provider\":\"github\"}" http://127.0.0.1:3772/api/signin)" = 409 ]'
 check "no sudo and no Docker socket" in_t3 bash -c '! command -v sudo && [ ! -e /var/run/docker.sock ]'
 check "custom uid has a user name, in docker exec too" bash -c \
   "$DOCKER rm -f t3codebox-test-uid >/dev/null 2>&1; $DOCKER run -d --name t3codebox-test-uid --user 4242:4242 $LOCAL_IMAGE sleep infinity >/dev/null && sleep 2 \

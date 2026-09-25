@@ -397,6 +397,32 @@ function checkPairingRequest(body) {
   return { baseUrl: `${url.origin}${url.pathname.replace(/\/+$/, "")}`, ttl: body.ttl, label: label || "Dashboard" };
 }
 
+// What a headless sign-in prints for the person signing in: the link to open, the one-time code to enter
+// there (Codex, Grok, GitHub), and whether it waits for a code to be pasted back (Claude). The links come
+// out before the code is looked for: Grok's link carries the code, Claude's has `code=true`.
+function parseSignIn(text) {
+  const clean = stripAnsi(text);
+  const url = clean.match(/https:\/\/[^\s"'<>]+/)?.[0] ?? null;
+  const code = clean.replace(/https:\/\/[^\s"'<>]+/g, " ").match(/\b[A-Z0-9]{4}-[A-Z0-9]{4,5}\b/)?.[0] ?? null;
+  return { url, code, pasteWanted: /Paste code/i.test(clean) };
+}
+
+// Processes without the ones the dashboard started (a sign-in, a status check): those are not agents at work.
+function withoutDescendants(processes, pid) {
+  const children = new Map();
+  for (const p of processes) children.set(p.ppid, [...(children.get(p.ppid) ?? []), p.pid]);
+  const skip = new Set();
+  for (const stack = [pid]; stack.length; ) {
+    for (const child of children.get(stack.pop()) ?? []) {
+      if (!skip.has(child)) {
+        skip.add(child);
+        stack.push(child);
+      }
+    }
+  }
+  return processes.filter((p) => !skip.has(p.pid));
+}
+
 // `t3 serve`: the T3 process tini started (the entrypoint execs into it), not a `t3 auth` call.
 function findT3Server(processes) {
   return processes.find((p) => p.ppid === 1 && p.exe && /^\/opt\/t3\/t3(?: \(deleted\))?$/.test(p.exe))?.pid ?? null;
@@ -404,33 +430,68 @@ function findT3Server(processes) {
 
 // Slow actions run as jobs: a POST starts one and returns at once, and the page polls it. One job of a
 // kind runs at a time (starting another returns the running one); the latest job of each kind is kept so
-// a page that reloads finds it again. `work(log)` gets the output so far and returns the result.
+// a page that reloads finds it again. `work(log, handle)` gets a function for the output so far and a
+// handle: `signal` aborts when the job is stopped, `setPrompt` sets what the page shows (a sign-in link
+// and code), `acceptInput(write)` lets the page send the job a line. It returns the result.
+// Only plain data goes on the job, which the page gets as JSON; controllers and writers stay in maps.
 class Jobs {
   constructor({ lines = 40, now = Date.now } = {}) {
     this.lines = lines;
     this.now = now;
     this.jobs = new Map();
+    this.controllers = new Map();
+    this.writers = new Map();
   }
 
   start(kind, title, work) {
     const running = this.latest(kind);
     if (running?.state === "running") return { job: running, started: false };
     for (const [id, job] of this.jobs) if (job.kind === kind) this.jobs.delete(id);
-    const job = { id: crypto.randomBytes(6).toString("hex"), kind, title, state: "running", lines: [], result: null, error: null, startedAt: this.now(), finishedAt: null };
+    const job = {
+      id: crypto.randomBytes(6).toString("hex"), kind, title, state: "running", lines: [], prompt: null, acceptsInput: false,
+      result: null, error: null, startedAt: this.now(), finishedAt: null,
+    };
+    const controller = new AbortController();
     this.jobs.set(job.id, job);
+    this.controllers.set(job.id, controller);
     const log = (output) => (job.lines = outputLines(output).slice(-this.lines));
+    const handle = {
+      signal: controller.signal,
+      setPrompt: (prompt) => (job.prompt = prompt),
+      acceptInput: (write) => {
+        this.writers.set(job.id, write);
+        job.acceptsInput = true;
+      },
+    };
     Promise.resolve()
-      .then(() => work(log))
+      .then(() => work(log, handle))
       .then(
         (result) => Object.assign(job, { state: "done", result: result ?? null }),
-        (error) => Object.assign(job, { state: "failed", error: String(error?.message || error) }),
+        (error) => Object.assign(job, { state: controller.signal.aborted ? "stopped" : "failed", error: String(error?.message || error) }),
       )
-      .finally(() => (job.finishedAt = this.now()));
+      .finally(() => {
+        Object.assign(job, { finishedAt: this.now(), acceptsInput: false });
+        this.controllers.delete(job.id);
+        this.writers.delete(job.id);
+      });
     return { job, started: true };
   }
 
   get(id) {
     return this.jobs.get(id) ?? null;
+  }
+
+  stop(id) {
+    const controller = this.controllers.get(id);
+    controller?.abort();
+    return Boolean(controller);
+  }
+
+  // Sends a line to a running job that takes input; false when it does not.
+  input(id, line) {
+    const write = this.writers.get(id);
+    write?.(line);
+    return Boolean(write);
   }
 
   latest(kind) {
@@ -746,7 +807,7 @@ function cursorCard({ installed, version, status, env }) {
     signedIn: status ? status.signedIn : null,
     method: env.CURSOR_API_KEY ? "API key from .env (CURSOR_API_KEY)" : status?.signedIn ? "Cursor login" : null,
     account: status?.email ?? null,
-    notes: status?.signedIn ? [] : ["No headless sign-in: set CURSOR_API_KEY in .env."],
+    signIn: status && !status.signedIn ? "docker exec -it -e NO_OPEN_BROWSER=1 t3codebox cursor-agent login" : null,
   });
 }
 
@@ -779,7 +840,7 @@ function opencodeCard({ installed, version, auth }) {
   });
 }
 
-function githubCard({ installed, version, accounts }) {
+function githubCard({ installed, version, accounts, env = {} }) {
   const active = (accounts ?? []).filter((a) => a.active);
   const ok = active.filter((a) => a.ok);
   const current = ok[0] ?? active[0];
@@ -796,8 +857,11 @@ function githubCard({ installed, version, accounts }) {
     account: account || null,
     details: current?.scopes.length ? [`Scopes: ${current.scopes.join(", ")}`] : [],
     warnings: twice ? [TWO_METHODS] : [],
-    notes: active.some((a) => !a.ok) ? ["GitHub did not accept the token."] : [],
-    signIn: accounts && !ok.length ? docker("gh auth login") : null,
+    notes: [
+      ...(active.some((a) => !a.ok) ? ["GitHub did not accept the token."] : []),
+      ...(env.GH_TOKEN && !ok.length ? ["gh uses GH_TOKEN from .env and will not store a sign-in; remove GH_TOKEN to sign in here."] : []),
+    ],
+    signIn: accounts && !ok.length && !env.GH_TOKEN ? docker("gh auth login") : null,
   });
 }
 
@@ -1064,16 +1128,19 @@ async function health() {
     cpu,
     memory: parseMemory(read("/sys/fs/cgroup/memory.current"), read("/sys/fs/cgroup/memory.max"), read("/sys/fs/cgroup/memory.stat")),
     mounts: { home: folder(mounts, HOME), workspace: folder(mounts, WORKSPACE) },
-    agents: countAgents(processes()),
+    agents: countAgents(withoutDescendants(processes(), process.pid)),
     browser,
   };
 }
 
 async function providers() {
   const versions = await cliVersions();
-  const env = Object.fromEntries(
-    ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CURSOR_API_KEY", "XAI_API_KEY"].map((name) => [name, Boolean(process.env[name])]),
-  );
+  const env = {
+    ...Object.fromEntries(
+      ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CURSOR_API_KEY", "XAI_API_KEY"].map((name) => [name, Boolean(process.env[name])]),
+    ),
+    GH_TOKEN: Boolean(process.env.GH_TOKEN || process.env.GITHUB_TOKEN),
+  };
   const installed = (id) => versions[id].installed;
   const output = (id, command, args) => (installed(id) ? run(command, args).then((r) => r.stdout) : null);
   const [claude, codex, cursor, opencode, gh] = await Promise.all([
@@ -1089,8 +1156,8 @@ async function providers() {
     cursorCard({ ...versions.cursor, env, status: parseCursorStatus(cursor) }),
     grokCard({ ...versions.grok, env, loginStored: hasFile(path.join(HOME, ".grok", "auth.json")) }),
     opencodeCard({ ...versions.opencode, auth: opencode === null ? null : parseOpencodeAuth(opencode) }),
-    githubCard({ ...versions.gh, accounts: parseGhStatus(gh) }),
-  ];
+    githubCard({ ...versions.gh, env, accounts: parseGhStatus(gh) }),
+  ].map((c) => ({ ...c, canSignIn: Boolean(c.signIn && SIGN_IN[c.id]) })); // a Sign in button wherever a sign-in is due
 }
 
 async function access() {
@@ -1213,15 +1280,35 @@ function restartT3() {
 }
 
 // Runs a CLI for a job: its output goes to the job's log as it comes. Resolves with stdout on exit 0,
-// rejects with the last line of output otherwise.
-function runLogged(command, args, log, { timeout = 5 * 60_000, logStdout = true } = {}) {
+// rejects with the last line of output otherwise. The CLI runs in its own process group, so stopping it
+// (the job's signal, or the timeout) also stops what it started, such as the native binary behind
+// Codex's npm wrapper: SIGTERM to the group, SIGKILL 10 s later. With `onInput`, stdin stays open and
+// `onInput` gets a function that writes a line to it.
+function runLogged(command, args, log, { timeout = 5 * 60_000, logStdout = true, env = {}, signal, onInput } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: HOME, env: { ...process.env, NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, {
+      cwd: HOME,
+      env: { ...process.env, NO_COLOR: "1", ...env },
+      stdio: [onInput ? "pipe" : "ignore", "pipe", "pipe"],
+      detached: true,
+    });
     let output = "";
     let stdout = "";
+    let stopped = null;
     const add = (chunk) => {
       output = (output + chunk).slice(-200_000);
       log(output);
+    };
+    const stop = (reason) => {
+      if (stopped || child.exitCode !== null) return;
+      stopped = reason;
+      const signalGroup = (name) => {
+        try {
+          process.kill(-child.pid, name);
+        } catch {}
+      };
+      signalGroup("SIGTERM");
+      setTimeout(() => signalGroup("SIGKILL"), 10_000).unref();
     };
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
@@ -1230,15 +1317,21 @@ function runLogged(command, args, log, { timeout = 5 * 60_000, logStdout = true 
       if (logStdout) add(chunk);
     });
     child.stderr.on("data", add);
-    const timer = setTimeout(() => child.kill("SIGTERM"), timeout);
+    if (onInput) {
+      child.stdin.on("error", () => {});
+      onInput((line) => child.stdin.write(`${line}\n`));
+    }
+    const timer = setTimeout(() => stop(`${command} took too long.`), timeout);
+    signal?.addEventListener("abort", () => stop("Stopped."), { once: true });
     child.on("error", (error) => {
       clearTimeout(timer);
       reject(error.code === "ENOENT" ? new Error(`${command} is not installed.`) : error);
     });
-    child.on("close", (code, signal) => {
+    child.on("close", (code, exitSignal) => {
       clearTimeout(timer);
-      if (code === 0) resolve(stdout);
-      else reject(new Error(lastLine(output) || `${command} ${signal ? `was stopped (${signal})` : `exited with ${code}`}.`));
+      if (stopped) reject(new Error(stopped));
+      else if (code === 0) resolve(stdout);
+      else reject(new Error(lastLine(output) || `${command} ${exitSignal ? `was stopped (${exitSignal})` : `exited with ${code}`}.`));
     });
   });
 }
@@ -1254,17 +1347,20 @@ async function skillAgents() {
 }
 
 function listSkillsJob(jobs, source) {
-  return jobs.start("skills", `Skills in ${source}`, async (log) => ({
+  return jobs.start("skills", `Skills in ${source}`, async (log, job) => ({
     action: "list",
     source,
-    skills: parseSkillsListing(await runLogged("skills", ["add", source, "-l"], log)),
+    skills: parseSkillsListing(await runLogged("skills", ["add", source, "-l"], log, { signal: job.signal })),
   }));
 }
 
 function installSkillJob(jobs, source, skill) {
-  return jobs.start("skills", `Installing ${skill} from ${source}`, async (log) => {
+  return jobs.start("skills", `Installing ${skill} from ${source}`, async (log, job) => {
     const agents = await skillAgents();
-    const output = await runLogged("skills", ["add", source, "--skill", skill, "-g", "-y", "--agent", ...agents, "--json"], log, { logStdout: false });
+    const output = await runLogged("skills", ["add", source, "--skill", skill, "-g", "-y", "--agent", ...agents, "--json"], log, {
+      logStdout: false,
+      signal: job.signal,
+    });
     const installed = parseSkillsAdd(output) ?? [];
     if (!installed.length) throw new Error(`${source} has no skill named ${skill}.`);
     const failed = installed.filter((s) => s.status !== "installed");
@@ -1273,9 +1369,44 @@ function installSkillJob(jobs, source, skill) {
   });
 }
 
+// Headless sign-in per provider. Each prints a link (Codex, Grok and GitHub a code too) and waits until the
+// sign-in is finished in a browser anywhere; Claude waits for the code its page shows to be pasted back.
+// OpenCode signs in through a menu per provider and stays a command to run.
+const SIGN_IN = {
+  claude: { command: "claude", args: ["auth", "login"], paste: true },
+  codex: { command: "codex", args: ["login", "--device-auth"] },
+  cursor: { command: "cursor-agent", args: ["login"], env: { NO_OPEN_BROWSER: "1" } },
+  grok: { command: "grok", args: ["login", "--device-auth"] },
+  github: { command: "gh", args: ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web", "--skip-ssh-key"] },
+};
+const SIGN_IN_NAMES = { ...PROVIDERS, github: "GitHub" };
+
+// One sign-in per provider at a time; device codes last about 15 minutes, so does the job.
+function signInJob(jobs, id) {
+  const { command, args, env, paste } = SIGN_IN[id];
+  return jobs.start(`signin:${id}`, `Signing in to ${SIGN_IN_NAMES[id]}`, async (log, job) => {
+    let shown = null;
+    const logAndShow = (output) => {
+      log(output);
+      const prompt = parseSignIn(output);
+      if (prompt.url !== shown?.url || prompt.code !== shown?.code || prompt.pasteWanted !== shown?.pasteWanted) {
+        shown = { ...prompt, qr: prompt.url ? qrCode(prompt.url) : null };
+        job.setPrompt(shown);
+      }
+    };
+    try {
+      await runLogged(command, args, logAndShow, { timeout: 15 * 60_000, env, signal: job.signal, onInput: paste ? job.acceptInput : undefined });
+    } catch (error) {
+      // Claude's failure lands on its prompt's line.
+      throw new Error(String(error.message).replace(/^Paste code here if prompted >\s*/, ""));
+    }
+    return { action: "sign-in", provider: id };
+  });
+}
+
 function removeSkillJob(jobs, folder) {
-  return jobs.start("skills", `Removing ${folder}`, async (log) => {
-    await runLogged("skills", ["remove", folder, "-g", "-y"], log);
+  return jobs.start("skills", `Removing ${folder}`, async (log, job) => {
+    await runLogged("skills", ["remove", folder, "-g", "-y"], log, { signal: job.signal });
     if (skills().installed.some((s) => s.folder === folder)) throw new Error(`skills did not remove ${folder}.`);
     return { action: "remove", folder };
   });
@@ -1378,6 +1509,7 @@ function main() {
     if (!url.pathname.startsWith("/api/")) return send(response, 404, "Not found");
     if (!session) return sendJson(response, 401, { error: "Sign in first." });
 
+    const validJobId = (id) => typeof id === "string" && /^[0-9a-f]{12}$/.test(id);
     const jobMatch = route.match(/^GET \/api\/jobs\/([0-9a-f]{12})$/);
     if (jobMatch) {
       const job = jobs.get(jobMatch[1]);
@@ -1442,6 +1574,27 @@ function main() {
         return restartT3() ? sendJson(response, 202, { restarting: true }) : sendJson(response, 409, { error: "T3's server process was not found." });
       case "GET /api/jobs":
         return sendJson(response, 200, { jobs: jobs.all() });
+      case "POST /api/jobs/stop": {
+        const body = await readJson(request);
+        if (!validJobId(body?.id)) return sendJson(response, 400, { error: "Expected a job id." });
+        return jobs.stop(body.id) ? send(response, 204) : sendJson(response, 409, { error: "That job is not running." });
+      }
+      case "POST /api/signin": {
+        const body = await readJson(request);
+        const id = body?.provider;
+        if (typeof id !== "string" || !Object.hasOwn(SIGN_IN, id)) return sendJson(response, 400, { error: "No sign-in for that provider here." });
+        if (!(await cliVersions())[id === "github" ? "gh" : id]?.installed) return sendJson(response, 409, { error: `${SIGN_IN_NAMES[id]} is not installed.` });
+        if (id === "github" && (process.env.GH_TOKEN || process.env.GITHUB_TOKEN)) {
+          return sendJson(response, 409, { error: "gh uses GH_TOKEN from .env and will not store a sign-in; remove GH_TOKEN to sign in here." });
+        }
+        return startJob(signInJob(jobs, id));
+      }
+      case "POST /api/signin/code": {
+        const body = await readJson(request);
+        const code = typeof body?.code === "string" ? body.code.trim() : "";
+        if (!validJobId(body?.id) || !code || code.length > 1000 || /\s|[\x00-\x1f\x7f]/.test(code)) return sendJson(response, 400, { error: "Expected the code." });
+        return jobs.input(body.id, code) ? send(response, 204) : sendJson(response, 409, { error: "That sign-in is not waiting for a code." });
+      }
       case "POST /api/skills/list": {
         const body = await readJson(request);
         if (!validSkillSource(body?.source)) return sendJson(response, 400, { error: "Expected a GitHub owner/repo or an https URL." });
@@ -1480,7 +1633,7 @@ module.exports = {
   agentOf, countAgents, parseClaudeStatus, parseCodexStatus, parseCursorStatus, parseOpencodeAuth, parseGhStatus,
   parseT3Sessions, parseT3Pairings, parsePairingCreate, parseSkillFrontmatter, parseDu, userAgentLabel, versionCache,
   outputLines, parseSkillsListing, parseSkillsAdd, validSkillSource, validSkillName, validId, checkGitAuthor,
-  checkPairingRequest, findT3Server, Jobs, qrCode,
+  checkPairingRequest, findT3Server, Jobs, qrCode, parseSignIn, withoutDescendants, runLogged,
   claudeCard, codexCard, cursorCard, grokCard, opencodeCard, githubCard,
   passwordMatches, loadPassword, SessionStore,
 };
