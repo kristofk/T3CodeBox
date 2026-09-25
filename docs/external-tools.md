@@ -158,6 +158,55 @@ Other skill folders:
 - Codex ships built-in skills in `~/.codex/skills/.system/`.
 - `~/.codex/.tmp/` is Codex's plugin cache, not installed skills.
 
+## mise (2026.9.13)
+
+Checked in its source at v2026.9.13 and by running it.
+
+- **Release assets:** `mise-v<version>-linux-{x64,arm64}`, a single binary, with `SHASUMS256.txt` (also
+  signed with minisign and GPG). `releases/latest/download/SHASUMS256.txt` names the latest version.
+- **Self-update** is off when `<prefix>/lib/mise/.disable-self-update` exists, the prefix being two levels
+  above the binary.
+- **Directories:** `MISE_DATA_DIR` (default `~/.local/share/mise`) holds `installs/`, `downloads/` and
+  `shims/`. Settings are in `~/.config/mise`, trust records in `~/.local/state/mise`, caches in
+  `~/.cache/mise`. The system
+  config is `/etc/mise/config.toml`; the user's global config wins over it.
+- **Shims:** a shim runs the version the directory pins. With no version pinned, it runs the next program
+  of that name on `PATH` (`not_found_system_fallback`, default on), or fails with "No version is set".
+  Shims apply a `mise.toml`'s `[env]` to the program they start, but not its hooks.
+- **Install on first use:** `auto_install`, `exec_auto_install` and `not_found_auto_install` are on by
+  default, and work without a terminal. Progress goes to stderr. A shim installs a missing pinned version,
+  but a shim exists only once some version of the tool is installed (`reshim` removes shims no installed
+  tool provides). `mise exec -- <command>` installs every missing tool the directory pins, then runs the
+  command.
+- **`mise current <tool>`** prints the version the directory pins, installed or not, and nothing on stdout
+  when none is pinned (a warning on stderr), in about 10 ms.
+- **Trust:** a `mise.toml` with more than plain versions (`[env]`, hooks, templates, settings) needs
+  `mise trust`; without a terminal an untrusted one fails. Plain `.tool-versions` and `.nvmrc`-style files
+  need no trust. `trusted_config_paths` trusts everything below a path, and is only read from global and
+  system config.
+- **Idiomatic version files** (`.nvmrc`, `.python-version`, `.ruby-version`, …) are off by default since
+  2025.10.0; `idiomatic_version_file_enable_tools` turns them on per tool.
+- **GitHub token** order: `MISE_GITHUB_TOKEN`, `GITHUB_API_TOKEN`, `GITHUB_TOKEN`,
+  `github.credential_command`, then gh's `hosts.yml` among others. `GH_TOKEN` is not read. A failing
+  credential command falls through to the next source.
+- **Prebuilt or compiled:** Node, Go and Java are official binaries; Python is python-build-standalone;
+  Ruby is prebuilt since 2026.8.0, compiling only as a fallback. Rust comes through rustup and links with
+  `cc`. Erlang compiles on Debian (prebuilt builds are Ubuntu-only), PHP always compiles.
+- **`mise registry <name>`** prints the backends of a registry tool and fails for unknown names;
+  `mise registry --json` lists every tool with the commands (`bins`) it provides, in about 10 ms.
+
+## Agents' system-wide instructions
+
+- **Claude Code:** `/etc/claude-code/CLAUDE.md` loads for every user and session, before the user's and the
+  project's files.
+- **Codex:** `/etc/codex/config.toml` is its lowest config layer; its `developer_instructions` apply unless
+  the user sets their own. There is no system-wide `AGENTS.md`. `codex debug prompt-input <prompt>` prints
+  what the model would get, instructions included.
+- **OpenCode:** `/etc/opencode/opencode.json` is merged into every configuration, and its `instructions`
+  list is added to the user's. `opencode debug config` prints the merged configuration.
+- **Cursor:** no system-wide rules file; its global rules are a setting in Cursor's app.
+- **Grok Build:** no system-wide instructions file; `/etc/grok` holds settings only.
+
 ## Chromium and linuxserver/chromium
 
 - **DevTools:**
@@ -215,6 +264,11 @@ Other skill folders:
 - gh: https://cli.github.com/manual/gh_auth_login
 - linuxserver/chromium: https://docs.linuxserver.io/images/docker-chromium/
 - Chrome's remote debugging changes: https://developer.chrome.com/blog/remote-debugging-port
+- mise: https://mise.jdx.dev, its `settings.toml` and `src/` at v2026.9.13
+- Claude Code's managed CLAUDE.md: https://code.claude.com/docs/en/memory; Codex's config layers:
+  `codex-rs/config/src/loader/` in https://github.com/openai/codex; OpenCode's managed config:
+  `packages/opencode/src/config/` in https://github.com/sst/opencode; Cursor: https://cursor.com/docs/rules;
+  Grok Build: https://docs.x.ai/build/features/project-rules.md
 - Playwright MCP: https://github.com/microsoft/playwright-mcp; chrome-devtools-mcp:
   https://github.com/ChromeDevTools/chrome-devtools-mcp
 - GitHub Actions billing: https://docs.github.com/en/billing/concepts/product-billing/github-actions

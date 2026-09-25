@@ -21,19 +21,24 @@ if ! { if [ -n "$name" ]; then printf 'PRETTY_HOSTNAME="%s"\n' "$name"; fi > /et
   echo "t3codebox: warning: could not write /etc/machine-info; T3CODEBOX_NAME is ignored" >&2
 fi
 
-for dir in "$HOME" /workspace; do
+for dir in "$HOME" /workspace /toolchains; do
   if [ ! -w "$dir" ]; then
     echo "t3codebox: warning: $dir is not writable by uid $(id -u); give the mounted folder to $(id -u):$(id -g)" >&2
   fi
 done
+# A compose.yaml from before the toolchains volume: installs would land in the container and go with it.
+if ! awk '$5 == "/toolchains" { found = 1 } END { exit !found }' /proc/self/mountinfo; then
+  echo "t3codebox: warning: /toolchains is not a volume, so the toolchains agents install are lost on the next update; add the toolchains volume from the current compose.yaml" >&2
+fi
 
 # Detached so tini, not t3, reaps it.
 (t3codebox-browser-setup &)
 
 # The dashboard on port 3772, restarted whenever it exits, so it never takes T3 down. DASHBOARD=off: none.
+# The image's Node by path: a `node` on PATH may be a mise shim.
 if [ "${DASHBOARD:-on}" != off ]; then
   (while :; do
-    node /usr/local/lib/t3codebox-dashboard/server.js || true
+    /usr/local/bin/node /usr/local/lib/t3codebox-dashboard/server.js || true
     echo "t3codebox: the dashboard stopped; restarting it in 5 s" >&2
     sleep 5
   done &)

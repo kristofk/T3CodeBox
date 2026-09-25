@@ -3,8 +3,9 @@
 How T3CodeBox works and why, for people and agents who change it. Using T3CodeBox is in the
 [README](../README.md); the pull request flow is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
-- [Architecture](architecture.md): the two images, what runs in them, the dashboard, CI and releases.
-- [External tools](external-tools.md): what T3 Code, the provider CLIs, `skills` and Chromium actually do,
+- [Architecture](architecture.md): the two images, what runs in them, toolchains, the dashboard, CI and
+  releases.
+- [External tools](external-tools.md): what T3 Code, the provider CLIs, `skills`, mise and Chromium actually do,
   checked against running versions. The image's scripts and the dashboard's parsers rely on these facts.
 - [Decisions](decisions.md): what was decided and why, including what was tried and dropped.
 

@@ -4,7 +4,7 @@
 
 | Image | Built from | What it adds |
 | --- | --- | --- |
-| `t3codebox` | `Dockerfile`, `rootfs/` | `t3 serve`, the five provider CLIs, the tools they need, the dashboard |
+| `t3codebox` | `Dockerfile`, `rootfs/` | `t3 serve`, the five provider CLIs, the tools they need, mise, the dashboard |
 | `t3codebox-browser` | `browser/` | Chromium on linuxserver's remote desktop, with DevTools reachable by the agents |
 
 Both images are released together, with the same tags, for amd64 and arm64.
@@ -30,10 +30,16 @@ Both images are released together, with the same tags, for amd64 and arm64.
   - The `PROVIDERS` build argument drops providers for a slimmer self-built image.
 - **Other tools:** `gh` from GitHub's apt repository (T3 refuses gh older than 2.81), git, ssh, ripgrep,
   jq, python3, make, procps, tzdata, `libnss-wrapper`, `tini`.
+- **Build tools:** `build-essential`, `pkg-config` and the headers of OpenSSL, zlib and libffi, for what
+  agents build (Rust links with `cc`; native npm, pip and gem packages compile against these).
+- **mise:** the release binary from GitHub, checked against the release's `SHASUMS256.txt`, in
+  `/usr/local/bin`, with self-update turned off (`/usr/local/lib/mise/.disable-self-update`). See
+  [Toolchains](#toolchains).
 - **git:** a system-wide credential helper sends github.com and gist.github.com to `gh`, so a `gh auth login`
   also covers `git push`. `safe.directory '*'` lets any owner's repositories under `/workspace` work.
 - **Environment defaults:** `T3CODE_HOST=0.0.0.0`, `T3CODE_PORT=3773`, `T3CODEBOX_VERSION` (the image
-  version, since labels are not visible inside the container).
+  version, since labels are not visible inside the container), `MISE_DATA_DIR=/toolchains`,
+  `BASH_ENV=/etc/profile.d/t3codebox-mise.sh`, and `PATH` starting with `/toolchains/shims`.
 - **Health check:** `GET /.well-known/t3/environment` every 30 s. T3 has no other health endpoint.
 
 ### t3codebox-browser
@@ -61,10 +67,12 @@ Both images are released together, with the same tags, for amd64 and arm64.
    uid.
 2. Writes `T3CODEBOX_NAME` to `/etc/machine-info` as `PRETTY_HOSTNAME`, which T3 shows as the environment
    name ahead of the hostname.
-3. Warns when home or `/workspace` is not writable.
+3. Warns when home, `/workspace` or `/toolchains` is not writable, and when `/toolchains` is not a mount
+   (a `compose.yaml` from before the toolchains volume).
 4. Starts `t3codebox-browser-setup` in the background. It waits up to 30 s for the browser container and then
    adds a `browser` MCP server to each agent's user config, only where one is missing.
-5. Starts the dashboard in a restart loop in the background, unless `DASHBOARD=off`.
+5. Starts the dashboard in a restart loop in the background, unless `DASHBOARD=off`. It runs on
+   `/usr/local/bin/node` by path, never a mise shim.
 6. Replaces itself with the command, `t3 serve` by default. When `t3 serve` exits, tini exits and the
    container stops.
 
@@ -72,12 +80,53 @@ Both images are released together, with the same tags, for amd64 and arm64.
 
 - The image runs as its non-root user (uid/gid 1000 by default). Compose's `user: "${PUID}:${PGID}"`
   changes that, and `docker exec` then runs as the same user, so no root-owned files end up in home.
-- Two volumes: home (`/home/t3codebox`: T3's state in `~/.t3`, every provider login, gh, git config, ssh,
-  the dashboard's password and sessions in `~/.t3codebox`) and `/workspace` (repositories). They're separate
-  so logins can be reset without losing repositories, and repositories can go on another disk without the
-  secrets.
+- Three volumes: home (`/home/t3codebox`: T3's state in `~/.t3`, every provider login, gh, git config, ssh,
+  the dashboard's password and sessions in `~/.t3codebox`, mise's settings, trust records and download
+  cache), `/workspace` (repositories) and `/toolchains` (what agents install with mise). They're separate so
+  logins can be reset without losing repositories, and repositories and toolchains can go on another disk
+  without the secrets.
+- `/toolchains` is its own top-level mount, not a volume inside home: Docker would create a missing parent
+  such as `~/.local/share` as root, and OpenCode keeps its login there.
 - `/workspace` never moves: T3 stores projects by absolute path.
 - Nothing the image ships lives in home, because a volume is filled from the image only once.
+
+## Toolchains
+
+Agents install languages and tools with mise, without root (#11).
+
+- **Where:** mise's data directory is `/toolchains` (`MISE_DATA_DIR`), the toolchains volume: installs in
+  `/toolchains/installs`, downloads in `/toolchains/downloads`, shims in `/toolchains/shims`. Its settings,
+  trust records and cache stay in home (`~/.config/mise`, `~/.local/state/mise`, `~/.cache/mise`).
+- **Shims first on `PATH`:** a shim runs the version the current directory pins in `mise.toml` or
+  `.tool-versions`, installs it on first use if missing, and falls back to the next program on `PATH` when
+  nothing is pinned. `PATH` is set in the image, so T3, the agents and every shell they start get it
+  without `mise activate`.
+- **Before the first install:** mise creates a shim only once a version of the tool is installed, so on a
+  fresh volume nothing would catch a pinned version. Two things do:
+  - For Node and Python, which the image has, `/usr/local/lib/t3codebox/runtimes` comes next on `PATH`
+    with `node`, `npm`, `npx`, `python`, `python3`, `pip` and `pip3`, all links to one script. When the
+    directory pins that language (`mise current`), it runs the command through `mise exec`, which installs
+    the version; otherwise it runs the image's.
+  - For everything else, bash's missing-command hint runs the command through `mise exec` when the
+    directory pins a tool that provides it.
+  - After that install, the tool's shims exist and take over.
+- **The image's Node tools:** Codex, Playwright MCP and `skills` are npm packages whose commands start with
+  `#!/usr/bin/env node`, which would find a project's Node through the shims. The Dockerfile rewrites their
+  first line to `#!/usr/local/bin/node`, and fails the build if one still uses `env node`. The dashboard is
+  started with `/usr/local/bin/node`. OpenCode's command is a native binary; Claude Code, Cursor, Grok
+  Build and T3 bring their own runtimes.
+- **The image's settings,** in `/etc/mise/config.toml`: `trusted_config_paths = ["/workspace"]`, and
+  `github.credential_command = "gh auth token"`, so a `GH_TOKEN` reaches mise too (mise reads gh's stored
+  login itself, but not `GH_TOKEN`). A user's `~/.config/mise/config.toml` wins over it.
+- **What the agents are told:** `/usr/local/share/t3codebox/agents.md`, a few lines on mise and the missing
+  root. Claude Code gets it as `/etc/claude-code/CLAUDE.md`, OpenCode through `instructions` in
+  `/etc/opencode/opencode.json`, Codex as `developer_instructions` in `/etc/codex/config.toml`, generated
+  at build time. Cursor and Grok Build have no system-wide instructions file.
+- **The missing-command hint:** `/etc/profile.d/t3codebox-mise.sh` defines bash's
+  `command_not_found_handle`. It finds the mise tool that provides the command (`cargo`: `rust`). If the
+  directory pins it, it installs and runs it; otherwise it suggests `mise use <tool>@latest`, or points to
+  `mise registry`, and exits 127. Every bash reads it: `bash -c` and scripts through `BASH_ENV`,
+  login shells through `/etc/profile`, interactive shells through `/etc/bash.bashrc`.
 
 ## The agents' browser tool
 
@@ -161,6 +210,10 @@ step). The icon is copied from `Icon/final/adaptive/` at build time.
   - the dashboard: sign-in, status, providers, git author, pairing link with QR code, skills install and
     remove, sign-in flows, Restart T3;
   - no sudo and no Docker socket, a user name for a custom uid;
+  - toolchains: the volume and the warning without it, mise's settings, the compiler and headers, a pinned
+    Node installing on first use in a project, the image's Node outside it and for the image's tools, a
+    pinned tool installing when its command is first run, the missing-command hint, the agents' instructions
+    in Codex's and OpenCode's resolved config;
   - the browser's password, cookie and stream;
   - no zombie processes;
   - the MCP registrations, and an agent-side MCP connection driving the browser.
