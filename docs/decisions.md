@@ -8,6 +8,13 @@ T3CodeBox is for developers who want everything working out of the box, and at t
 who know containers and want every default easy to change. Every default works without edits; every default
 can be changed in the obvious place: `.env`, `compose.yaml` or a build argument.
 
+## Names
+
+The product is **T3CodeBox**, in titles, docs and release names. Everything Docker or a command needs is
+lowercase `t3codebox`: images, compose project, containers, volumes, the image's user and its home. The
+repository keeps the capitals; GitHub URLs ignore case. Our own settings are uppercase (`T3CODEBOX_TAG`,
+`BROWSER_PASSWORD`, `DASHBOARD_PORT`, …); `T3CODE_*` stays T3's own.
+
 ## The image
 
 1. **All five providers in one image:** Claude Code, Codex, Cursor, Grok Build and OpenCode. A provider that

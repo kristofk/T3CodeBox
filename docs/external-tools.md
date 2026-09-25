@@ -195,3 +195,27 @@ Other skill folders:
     time (`/proc/1/stat` field 22, in ticks of 1/100 s).
 - **Mounts:** in `/proc/self/mountinfo`, a named volume's root ends in `/volumes/<name>/_data`. A bind
   mount's root is the path inside its source file system, not the host path.
+
+## GitHub
+
+- Standard GitHub-hosted runners, `ubuntu-24.04-arm` included, are free for public repositories, and so are
+  public GHCR packages.
+- Packages pushed by a public repository's workflow came out public without a manual step.
+- Scheduled workflows are turned off after 60 days without activity in the repository (#14).
+
+## Sources
+
+- T3 Code: https://github.com/pingdotgg/t3code, its `docs/user/` pages, `.github/workflows/release.yml` and
+  `apps/server/src/` at v0.0.42; https://t3.codes/install.sh
+- Claude Code: https://code.claude.com/docs/en/authentication
+- Codex: https://learn.chatgpt.com/docs/auth
+- Cursor: https://cursor.com/docs/cli/headless
+- Grok Build: https://docs.x.ai/build/cli/headless-scripting
+- OpenCode: https://opencode.ai/docs/cli/
+- gh: https://cli.github.com/manual/gh_auth_login
+- linuxserver/chromium: https://docs.linuxserver.io/images/docker-chromium/
+- Chrome's remote debugging changes: https://developer.chrome.com/blog/remote-debugging-port
+- Playwright MCP: https://github.com/microsoft/playwright-mcp; chrome-devtools-mcp:
+  https://github.com/ChromeDevTools/chrome-devtools-mcp
+- GitHub Actions billing: https://docs.github.com/en/billing/concepts/product-billing/github-actions
+- Everything else on this page was checked by running the tools in the image.
