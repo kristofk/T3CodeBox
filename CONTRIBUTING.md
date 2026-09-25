@@ -5,6 +5,10 @@
 Every change goes through a pull request, one-line fixes included; `main` takes nothing else. A pull
 request squash-merges once `check` and both `test` jobs pass on a branch that is up to date with `main`.
 
+Before starting on an issue, check it for open or draft pull requests: the issue's "Development" box on
+GitHub, or `gh pr list --search "#N"`. One means someone is already working on it, so leave the issue alone
+unless you mean to work on it in parallel.
+
 1. Branch from `main` and open the pull request as a draft: `gh pr create --draft`. Drafts run CI but
    never merge.
 2. Push until the change is done.
