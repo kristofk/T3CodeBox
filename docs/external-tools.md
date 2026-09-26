@@ -197,6 +197,9 @@ Checked in its source at v2026.9.13 and by running it.
 
 ## Agents' system-wide instructions
 
+Checked in each tool's source or docs, and in CI against the versions above: Claude Code's file, and
+Codex's and OpenCode's resolved configuration.
+
 - **Claude Code:** `/etc/claude-code/CLAUDE.md` loads for every user and session, before the user's and the
   project's files.
 - **Codex:** `/etc/codex/config.toml` is its lowest config layer; its `developer_instructions` apply unless
