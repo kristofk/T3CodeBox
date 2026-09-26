@@ -139,7 +139,7 @@ docker exec t3codebox bash -c 'for d in /workspace/*/.git; do t3 project add "${
 
 ## Toolchains
 
-Agents install languages and tools with [mise](https://mise.jdx.dev), which needs no root: the container has no sudo and no `apt-get`. Every agent finds out about mise: Claude Code, Codex and OpenCode are told at the start of each thread, and in every agent's shell a missing command says how to install it.
+Agents install languages and tools with [mise](https://mise.jdx.dev), which needs no root: the container has no sudo and no `apt-get`. Every agent finds out about mise: Claude Code, Codex and OpenCode are told at the start of each thread, and in every agent's bash a missing command says how to install it.
 
 - A repository pins versions in `mise.toml` or `.tool-versions`. A pinned version that isn't installed yet installs on first use, so `go test` in a repo pinned to Go 1.23 just works, only slower the first time.
 - `mise.toml` files under `/workspace` are trusted without `mise trust`: agents run what a repository contains anyway.

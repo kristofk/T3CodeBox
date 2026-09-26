@@ -100,6 +100,12 @@ repository keeps the capitals; GitHub URLs ignore case. Our own settings are upp
     - API keys aren't typed into the page: they're long-lived secrets and stay in `.env`.
     - GitHub isn't offered while `GH_TOKEN` is set, because gh uses the token and won't store a sign-in.
 
+## Documentation
+
+25. **Docs live in this repository,** in `docs/`, not in a wiki, GitBook or a Pages site. Anyone who clones
+    the repository, agents included, has them, and a change updates its docs in the same reviewed pull
+    request. Open work lives in GitHub issues.
+
 ## Toolchains (#11)
 
 26. **mise installs what agents need, without root.** Considered and not used: asdf (slower, a plugin per
@@ -123,12 +129,6 @@ repository keeps the capitals; GitHub URLs ignore case. Our own settings are upp
 31. **Agents are told in files the image owns** (`/etc/claude-code`, `/etc/opencode`, `/etc/codex`), never
     in the user's own instruction files in home. Cursor and Grok Build have no such file, so a missing
     command in bash says how to install it, for every agent.
-
-## Documentation
-
-25. **Docs live in this repository,** in `docs/`, not in a wiki, GitBook or a Pages site. Anyone who clones
-    the repository, agents included, has them, and a change updates its docs in the same reviewed pull
-    request. Open work lives in GitHub issues.
 
 ## Prior art
 
