@@ -166,9 +166,11 @@ step). The icon is copied from `Icon/final/adaptive/` at build time.
   - files: `/proc/self/mountinfo`, the cgroup v2 files, `/proc/<pid>/stat` and `/proc/<pid>/exe`
     (command lines are never read, because T3 passes bearer tokens on them), `SKILL.md` frontmatter;
   - Node's `os`;
-  - the CLIs' own status commands, described in [External tools](external-tools.md).
+  - the CLIs' own status commands, described in [External tools](external-tools.md), and `mise ls` for
+    the toolchains, with `du` for their sizes.
   - Environment variables are only checked for being set.
-- **Jobs:** slow actions are jobs: skill list, install and remove, and provider sign-ins and sign-outs.
+- **Jobs:** slow actions are jobs: skill list, install and remove, provider sign-ins and sign-outs, and
+  removing unused toolchains (`mise prune --yes`).
   - A POST starts one and returns, and the page polls it every second.
   - One job per kind runs at a time, and the latest per kind is kept so a reloaded page picks it up.
   - A job can be stopped, which stops the CLI's whole process group: SIGTERM, then SIGKILL after 10 s.
@@ -208,7 +210,7 @@ step). The icon is copied from `Icon/final/adaptive/` at build time.
   - every CLI's version;
   - pairing link, state across a restart;
   - the dashboard: sign-in, status, providers, git author, pairing link with QR code, skills install and
-    remove, sign-in and sign-out flows, Restart T3;
+    remove, sign-in and sign-out flows, the toolchains list and removing unused ones, Restart T3;
   - no sudo and no Docker socket, a user name for a custom uid;
   - toolchains: the volume and the warning without it, mise's settings, the compiler and headers, a pinned
     Node installing on first use in a project, the image's Node outside it and for the image's tools, a

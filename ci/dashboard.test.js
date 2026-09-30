@@ -827,6 +827,47 @@ describe("jobs", () => {
   });
 });
 
+describe("toolchains", () => {
+  const installed = `{
+  "shfmt": [
+    { "version": "3.8.0", "install_path": "/toolchains/installs/shfmt/3.8.0", "installed": true, "active": false },
+    { "version": "3.9.0", "install_path": "/toolchains/installs/shfmt/3.9.0", "installed": true, "active": false },
+    { "version": "3.10.0", "install_path": "/toolchains/installs/shfmt/3.10.0", "installed": true, "active": false }
+  ]
+}`;
+  // --all-sources leaves out a version nothing pins (3.9.0).
+  const allSources = `{
+  "shfmt": [
+    { "version": "3.8.0", "install_path": "/toolchains/installs/shfmt/3.8.0",
+      "sources": [{ "type": ".tool-versions", "path": "/workspace/proj-b/.tool-versions", "requested_version": "3.8.0" }], "installed": true, "active": true },
+    { "version": "3.10.0", "install_path": "/toolchains/installs/shfmt/3.10.0",
+      "sources": [{ "type": "mise.toml", "path": "/workspace/proj-a/mise.toml", "requested_version": "3.10.0" },
+                  { "type": "mise.toml", "path": "/home/t3codebox/.config/mise/config.toml", "requested_version": "3.10.0" }], "installed": true, "active": true }
+  ]
+}`;
+
+  test("mise ls --json: versions, install paths and pins", () => {
+    assert.deepEqual(d.parseMiseList(installed).map((t) => `${t.tool}@${t.version} ${t.path}`), [
+      "shfmt@3.8.0 /toolchains/installs/shfmt/3.8.0",
+      "shfmt@3.9.0 /toolchains/installs/shfmt/3.9.0",
+      "shfmt@3.10.0 /toolchains/installs/shfmt/3.10.0",
+    ]);
+    assert.deepEqual(d.parseMiseList(allSources).map((t) => t.sources), [
+      ["/workspace/proj-b/.tool-versions"],
+      ["/workspace/proj-a/mise.toml", "/home/t3codebox/.config/mise/config.toml"],
+    ]);
+    assert.deepEqual(d.parseMiseList("{}"), []);
+    assert.equal(d.parseMiseList("mise ERROR"), null);
+    assert.equal(d.parseMiseList("[]"), null);
+  });
+
+  test("where a pin comes from", () => {
+    assert.equal(d.pinLabel("/home/t3codebox/.config/mise/config.toml", "/home/t3codebox"), "global config");
+    assert.equal(d.pinLabel("/etc/mise/config.toml", "/home/t3codebox"), "the image's config");
+    assert.equal(d.pinLabel("/workspace/proj-a/mise.toml", "/home/t3codebox"), "/workspace/proj-a/mise.toml");
+  });
+});
+
 describe("small parsers", () => {
   test("du -sk", () => {
     assert.deepEqual(d.parseDu("4200\t/home/t3codebox\n120\t/workspace\n"), { "/home/t3codebox": 4200 * 1024, "/workspace": 120 * 1024 });
