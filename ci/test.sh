@@ -77,8 +77,8 @@ check "dashboard answers on 3772 and refuses requests without a session" bash -c
   "for i in \$(seq 30); do [ \"\$($DOCKER exec $c curl -s -o /dev/null -w %{http_code} http://127.0.0.1:3772/api/status)\" = 401 ] && exit 0; sleep 2; done; exit 1"
 check "dashboard signs in with its generated password" in_t3 bash -c \
   'jq -n --arg p "$(cat ~/.t3codebox/dashboard-password)" "{password: \$p}" | curl -fsS -c /tmp/dashboard-cookies -H "Content-Type: application/json" -d @- http://127.0.0.1:3772/api/sign-in'
-check "dashboard status: T3 up, both volumes mounted, memory in use" in_t3 bash -c \
-  'for i in $(seq 30); do curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/status | jq -e ".t3.up and .mounts.home.kind == \"volume\" and .mounts.workspace.kind == \"volume\" and .memory.used > 0" && exit 0; sleep 2; done; exit 1'
+check "dashboard status: T3 up, the three volumes mounted, memory in use" in_t3 bash -c \
+  'for i in $(seq 30); do curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/status | jq -e ".t3.up and .mounts.home.kind == \"volume\" and .mounts.workspace.kind == \"volume\" and .mounts.toolchains.kind == \"volume\" and .memory.used > 0" && exit 0; sleep 2; done; exit 1'
 check "dashboard lists every provider with its version, and the pairing link" in_t3 bash -c \
   'for i in $(seq 30); do curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/providers | jq -e "[.providers[] | select(.installed and .version != null)] | length == 6" && break; sleep 2; done \
    && curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/providers | jq -e "[.providers[] | select(.installed and .version != null)] | length == 6" \
@@ -153,6 +153,15 @@ check "the image's Node tools and the dashboard run the image's Node, in a proje
 check "a pinned tool that isn't installed installs on first use when its command is run" in_t3 bash -c \
   'mkdir -p /workspace/mise-test-shfmt && cd /workspace/mise-test-shfmt && printf "[tools]\nshfmt = \"3.10.0\"\n" > mise.toml \
    && [ "$(bash -c "shfmt --version")" = v3.10.0 ] && [ "$(command -v shfmt)" = /toolchains/shims/shfmt ]'
+check "dashboard lists the toolchains with what pins them and their sizes, and removes the unused ones" in_t3 bash -c \
+  'tools() { curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/toolchains; }
+   mise install shfmt@3.9.0 >/dev/null 2>&1 \
+   && tools | jq -e ".total > 0 and any(.tools[]; .tool == \"shfmt\" and .version == \"3.10.0\" and .size > 0 and (.pinnedBy | index(\"/workspace/mise-test-shfmt/mise.toml\")) and (.unused | not))
+                   and any(.tools[]; .tool == \"shfmt\" and .version == \"3.9.0\" and .unused and .pinnedBy == [])" >/dev/null \
+   && id=$(curl -fsS -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "{}" http://127.0.0.1:3772/api/toolchains/prune | jq -r .job.id) \
+   && for i in $(seq 120); do j=$(curl -fsS -b /tmp/dashboard-cookies "http://127.0.0.1:3772/api/jobs/$id"); [ "$(jq -r .job.state <<< "$j")" != running ] && break; sleep 1; done \
+   && jq -r ".job.error // empty" <<< "$j" && [ "$(jq -r .job.state <<< "$j")" = done ] \
+   && ! test -e /toolchains/installs/shfmt/3.9.0 && test -e /toolchains/installs/shfmt/3.10.0 && tools | jq -e "all(.tools[]; .unused | not)" >/dev/null'
 check "a missing command points to mise, in bash -c and bash -lc" in_t3 bash -c \
   'for flag in -c -lc; do out=$(cd /tmp && bash "$flag" "cargo --version" 2>&1); [ $? = 127 ] && grep -q "mise use rust@latest" <<< "$out" || { echo "bash $flag: $out"; exit 1; }; done'
 check "agents are told about mise: Claude Code's file, OpenCode's and Codex's resolved config" in_t3 bash -c \

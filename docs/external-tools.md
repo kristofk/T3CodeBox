@@ -174,9 +174,9 @@ Other skill folders:
 - Codex ships built-in skills in `~/.codex/skills/.system/`.
 - `~/.codex/.tmp/` is Codex's plugin cache, not installed skills.
 
-## mise (2026.9.13)
+## mise (2026.9.13–14)
 
-Checked in its source at v2026.9.13 and by running it.
+Checked in its source at v2026.9.13 and by running 2026.9.13 and 2026.9.14.
 
 - **Release assets:** `mise-v<version>-linux-{x64,arm64}`, a single binary, with `SHASUMS256.txt` (also
   signed with minisign and GPG). `releases/latest/download/SHASUMS256.txt` names the latest version.
@@ -208,6 +208,16 @@ Checked in its source at v2026.9.13 and by running it.
 - **Prebuilt or compiled:** Node, Go and Java are official binaries; Python is python-build-standalone;
   Ruby is prebuilt since 2026.8.0, compiling only as a fallback. Rust comes through rustup and links with
   `cc`. Erlang compiles on Debian (prebuilt builds are Ubuntu-only), PHP always compiles.
+- **`mise ls --json`:** an object with a list of versions per tool, each with `version`, `install_path`,
+  `installed` and `active`; `{}` when nothing is installed. `--installed` lists what is in `installs/`;
+  `--prunable` lists what `mise prune` would remove. `--all-sources` adds `sources` (`type`, `path`,
+  `requested_version`), the tracked config files that pin each version, but lists only pinned versions,
+  even with `--installed`.
+- **`mise prune`** removes the versions that no tracked config file pins as its latest, and tracked links to
+  configs that are gone. mise tracks a config file once it has run in its directory
+  (`mise config ls --tracked-configs`, plain lines), `/etc/mise/config.toml` and the global config
+  included. Without a terminal it fails unless given `--yes`; `-n` is a dry run that says why each version
+  goes. Progress goes to stderr.
 - **`mise registry <name>`** prints the backends of a registry tool and fails for unknown names;
   `mise registry --json` lists every tool with the commands (`bins`) it provides, in about 10 ms.
 

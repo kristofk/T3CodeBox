@@ -156,6 +156,13 @@ button.danger { color: var(--bad); }
       </div>
     </section>
     <section>
+      <h2>Toolchains <button id="toolchains-refresh" type="button">Refresh</button></h2>
+      <div class="panel">
+        <div id="toolchains"><p class="muted">Loading…</p></div>
+        <div id="toolchain-job" class="job" hidden></div>
+      </div>
+    </section>
+    <section>
       <h2>Dashboard devices</h2>
       <div id="devices" class="panel"><p class="muted">Loading…</p></div>
     </section>
@@ -280,10 +287,13 @@ function renderHealth(s) {
     rows.push(row("Memory", muted("unknown")));
   }
 
-  for (const [key, label] of [["home", "Home"], ["workspace", "Workspace"]]) {
+  for (const [key, label] of [["home", "Home"], ["workspace", "Workspace"], ["toolchains", "Toolchains"]]) {
     const m = s.mounts[key];
+    if (!m) continue;
     if (m.kind === "none" || m.kind === "tmpfs") {
-      const text = m.kind === "none"
+      const text = m.kind === "none" && key === "toolchains"
+        ? `${m.path} is not a volume: the toolchains agents install are lost on the next update. Add the toolchains volume from the current compose.yaml.`
+        : m.kind === "none"
         ? `${m.path} is not mounted: its data is lost when the container is recreated.`
         : `${m.path} is in memory (tmpfs): its data is lost when the container stops.`;
       red.push(text);
@@ -781,6 +791,7 @@ async function watchJob(job) {
   try {
     while (true) {
       if (job.kind === "skills") renderSkillsJob(job);
+      else if (job.kind === "toolchains") renderToolchainsJob(job);
       else if (job.kind.startsWith("signin:")) renderSignIn(job);
       else if (job.kind.startsWith("signout:")) renderSignOut(job);
       if (job.state !== "running") break;
@@ -793,6 +804,7 @@ async function watchJob(job) {
       }
     }
     if (job.kind === "skills" && job.state === "done" && job.result?.action !== "list") loadSkills();
+    if (job.kind === "toolchains" && job.state === "done") loadToolchains();
     if ((job.kind.startsWith("signin:") || job.kind.startsWith("signout:")) && job.state === "done") loadProviders();
   } finally {
     watching.delete(job.id);
@@ -838,6 +850,73 @@ async function loadSkills() {
   }
 }
 
+// ---- Toolchains: what mise installed, on open and on Refresh ----
+
+function renderToolchains({ tools, total }) {
+  const unused = tools.filter((t) => t.unused);
+  const unusedSize = unused.reduce((sum, t) => sum + (t.size || 0), 0);
+  const prune = h("button", { type: "button", class: "danger", disabled: unused.length === 0 || null, onclick: () => {
+    if (confirm(`Remove ${unused.length} unused toolchain version${unused.length === 1 ? "" : "s"} (${bytes(unusedSize)})? A project that needs one again installs it again.`)) {
+      startToolchainsJob();
+    }
+  } }, unused.length ? `Remove unused (${unused.length}, ${bytes(unusedSize)})` : "Remove unused");
+  const byName = (a, b) => a.tool.localeCompare(b.tool) || a.version.localeCompare(b.version, undefined, { numeric: true });
+  $("#toolchains").replaceChildren(
+    h("p", null, `/toolchains: ${bytes(total)} in ${tools.length} version${tools.length === 1 ? "" : "s"}`),
+    tools.length === 0 ? h("p", { class: "muted" }, "Nothing installed yet.")
+    : h("ul", { class: "list" }, [...tools].sort(byName).map((t) => h("li", null,
+        h("div", null,
+          h("strong", null, `${t.tool} ${t.version}`), " ", muted(bytes(t.size)),
+          h("div", { class: "muted" }, t.pinnedBy.length ? `Pinned by ${t.pinnedBy.join(", ")}` : "Pinned by nothing mise knows"),
+        ),
+        t.unused && h("span", { class: "chip" }, "unused"),
+      ))),
+    h("div", { class: "actions" }, prune),
+    h("p", { class: "note" }, "Remove unused runs mise prune: it removes the versions no config pins, among those mise has seen. mise sees a project once it has run there, so a version pinned only by a project it hasn't run in yet counts as unused, and installs again when needed."),
+  );
+}
+
+async function loadToolchains() {
+  const button = $("#toolchains-refresh");
+  button.disabled = true;
+  try {
+    renderToolchains(await api("api/toolchains"));
+  } catch (error) {
+    if (!(error instanceof SignedOut)) $("#toolchains").replaceChildren(failed(error));
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$("#toolchains-refresh").addEventListener("click", loadToolchains);
+
+function renderToolchainsJob(job) {
+  const panel = $("#toolchain-job");
+  const state = job.state === "running" ? muted("running…") : job.state === "done" ? ok("done") : job.state === "stopped" ? muted("stopped") : bad(`failed: ${job.error}`);
+  const stop = h("button", { type: "button", onclick: async () => {
+    stop.disabled = true;
+    try {
+      await api("api/jobs/stop", { id: job.id });
+    } catch {}
+  } }, "Stop");
+  panel.replaceChildren(h("div", null,
+    h("div", { class: "actions" }, h("strong", null, job.title), state, job.state === "running" && stop),
+    job.lines.length > 0 && h("details", { open: job.state === "running" ? true : null }, h("summary", null, "Output"), h("pre", { class: "log" }, job.lines.join("\n"))),
+  ));
+  panel.hidden = false;
+}
+
+async function startToolchainsJob() {
+  try {
+    watchJob((await api("api/toolchains/prune", {})).job);
+  } catch (error) {
+    if (!(error instanceof SignedOut)) {
+      $("#toolchain-job").replaceChildren(h("p", { class: "bad" }, error.message));
+      $("#toolchain-job").hidden = false;
+    }
+  }
+}
+
 // ---- Dashboard devices ----
 
 async function signOut(device, button) {
@@ -880,6 +959,7 @@ function showBoard() {
   loadProviders();
   loadAccess();
   loadSkills();
+  loadToolchains();
   loadDevices();
   resumeJobs();
 }

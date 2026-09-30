@@ -15,6 +15,7 @@ const path = require("node:path");
 const PORT = 3772;
 const HOME = process.env.HOME || os.homedir();
 const WORKSPACE = "/workspace";
+const TOOLCHAINS = "/toolchains";
 const PASSWORD_FILE = path.join(HOME, ".t3codebox", "dashboard-password");
 const SESSIONS_FILE = path.join(HOME, ".t3codebox", "dashboard-sessions.json");
 const COOKIE = "t3codebox_dashboard";
@@ -274,6 +275,28 @@ function parseDu(text) {
     if (match) sizes[match[2]] = Number(match[1]) * 1024;
   }
   return sizes;
+}
+
+// `mise ls --json` (with --installed, --prunable or --all-sources): per tool, its versions with the install
+// path, and with --all-sources the config files that pin each one.
+function parseMiseList(text) {
+  const tools = parseJson(text);
+  if (!tools || typeof tools !== "object" || Array.isArray(tools)) return null;
+  return Object.entries(tools).flatMap(([tool, versions]) =>
+    (Array.isArray(versions) ? versions : []).filter((v) => str(v?.version)).map((v) => ({
+      tool,
+      version: v.version,
+      path: str(v.install_path),
+      sources: Array.isArray(v.sources) ? v.sources.map((source) => str(source?.path)).filter(Boolean) : [],
+    })),
+  );
+}
+
+// A config file that pins a toolchain, as the page names it: the user's global config, the image's, or the path.
+function pinLabel(file, home = HOME) {
+  if (file.startsWith(path.join(home, ".config", "mise") + "/") || file === path.join(home, ".tool-versions")) return "global config";
+  if (file.startsWith("/etc/mise/")) return "the image's config";
+  return file;
 }
 
 // "Safari on iPhone" from a user agent, for the list of dashboard devices.
@@ -1150,7 +1173,7 @@ async function health() {
     host: { cores: os.availableParallelism(), load: os.loadavg(), memory: os.totalmem() },
     cpu,
     memory: parseMemory(read("/sys/fs/cgroup/memory.current"), read("/sys/fs/cgroup/memory.max"), read("/sys/fs/cgroup/memory.stat")),
-    mounts: { home: folder(mounts, HOME), workspace: folder(mounts, WORKSPACE) },
+    mounts: { home: folder(mounts, HOME), workspace: folder(mounts, WORKSPACE), toolchains: folder(mounts, TOOLCHAINS) },
     agents: countAgents(withoutDescendants(processes(), process.pid)),
     browser,
   };
@@ -1247,6 +1270,37 @@ async function sizes() {
   const result = await run("du", ["-sk", HOME, WORKSPACE], 10 * 60_000);
   const parsed = parseDu(result.stdout);
   return { home: parsed[HOME] ?? null, workspace: parsed[WORKSPACE] ?? null };
+}
+
+// What mise installed in /toolchains: each version with its size, the config files mise has seen pin it,
+// and whether `mise prune` would remove it. mise knows a project once it has run there.
+async function toolchains() {
+  const [installed, prunable, pinned] = await Promise.all([
+    run("mise", ["ls", "--installed", "--json"]),
+    run("mise", ["ls", "--prunable", "--json"]),
+    // Lists only pinned versions, so the other two calls give the full list and what prune removes.
+    run("mise", ["ls", "--installed", "--json", "--all-sources"]),
+  ]);
+  const key = (t) => `${t.tool}@${t.version}`;
+  const list = parseMiseList(installed.stdout);
+  const unused = parseMiseList(prunable.stdout);
+  const sources = parseMiseList(pinned.stdout);
+  for (const [result, parsed] of [[installed, list], [prunable, unused], [pinned, sources]]) {
+    if (!parsed) throw new Error(result.missing ? "mise is not installed." : lastLine(result.stderr) || "mise did not list the toolchains.");
+  }
+  const paths = list.map((t) => t.path).filter(Boolean);
+  // Separate runs: du counts a path once, so /toolchains after its own installs would leave them out.
+  const [each, all] = await Promise.all([
+    paths.length ? run("du", ["-sk", ...paths], 10 * 60_000) : { stdout: "" },
+    run("du", ["-sk", TOOLCHAINS], 10 * 60_000),
+  ]);
+  const sizes = parseDu(each.stdout);
+  const prunes = new Set(unused.map(key));
+  const pins = new Map(sources.map((t) => [key(t), [...new Set(t.sources.map((file) => pinLabel(file)))]]));
+  return {
+    tools: list.map((t) => ({ tool: t.tool, version: t.version, size: sizes[t.path] ?? null, pinnedBy: pins.get(key(t)) ?? [], unused: prunes.has(key(t)) })),
+    total: parseDu(all.stdout)[TOOLCHAINS] ?? null,
+  };
 }
 
 // ---- Settings: actions ----
@@ -1460,6 +1514,14 @@ function signOutJob(jobs, id, login, cardOf) {
   });
 }
 
+// `mise prune` asks before removing without a terminal, and fails; --yes answers it.
+function pruneToolchainsJob(jobs) {
+  return jobs.start("toolchains", "Removing unused toolchains", async (log, job) => {
+    await runLogged("mise", ["prune", "--yes"], log, { timeout: 10 * 60_000, signal: job.signal });
+    return { action: "prune" };
+  });
+}
+
 function removeSkillJob(jobs, folder) {
   return jobs.start("skills", `Removing ${folder}`, async (log, job) => {
     await runLogged("skills", ["remove", folder, "-g", "-y"], log, { signal: job.signal });
@@ -1534,6 +1596,7 @@ function main() {
   const sharedProviders = shared(providers);
   const sharedAccess = shared(access);
   const sharedSizes = shared(sizes);
+  const sharedToolchains = shared(toolchains);
   const jobs = new Jobs();
 
   // Wrong passwords wait a second each, one at a time.
@@ -1601,6 +1664,11 @@ function main() {
       case "POST /api/sizes":
         if (!(await readJson(request))) return sendJson(response, 400, { error: "Expected JSON." });
         return sendJson(response, 200, await sharedSizes());
+      case "GET /api/toolchains":
+        return act(async () => sendJson(response, 200, await sharedToolchains()));
+      case "POST /api/toolchains/prune":
+        if (!(await readJson(request))) return sendJson(response, 400, { error: "Expected JSON." });
+        return startJob(pruneToolchainsJob(jobs));
       case "GET /api/git":
         return sendJson(response, 200, await gitAuthor());
       case "POST /api/git": {
@@ -1700,7 +1768,7 @@ function main() {
 module.exports = {
   parseVersion, parseMountinfo, describeMount, parseKeyValues, parseMemory, parseCpuMax, parseProcStat, containerUptime,
   agentOf, countAgents, parseClaudeStatus, parseCodexStatus, parseCursorStatus, parseOpencodeAuth, parseGhStatus,
-  parseT3Sessions, parseT3Pairings, parsePairingCreate, parseSkillFrontmatter, parseDu, userAgentLabel, versionCache,
+  parseT3Sessions, parseT3Pairings, parsePairingCreate, parseSkillFrontmatter, parseDu, parseMiseList, pinLabel, userAgentLabel, versionCache,
   outputLines, parseSkillsListing, parseSkillsAdd, validSkillSource, validSkillName, validId, checkGitAuthor,
   checkPairingRequest, findT3Server, Jobs, qrCode, parseSignIn, withoutDescendants, runLogged, checkSignOut, signOutJob,
   claudeCard, codexCard, cursorCard, grokCard, opencodeCard, githubCard,
