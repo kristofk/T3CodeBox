@@ -93,13 +93,18 @@ check "dashboard creates a pairing link with its QR code, lists it and revokes i
    id=$(curl -fsS -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "{\"baseUrl\":\"https://t3codebox.test\",\"ttl\":\"15m\",\"label\":\"dashboard-test\"}" http://127.0.0.1:3772/api/pairing \
      | jq -er "select((.pairing.pairUrl | startswith(\"https://t3codebox.test/pair\")) and (.pairing.qr | length >= 21 and (map(length) | unique == [length]))) | .pairing.id") && listed \
    && curl -fsS -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "{\"id\":\"$id\"}" http://127.0.0.1:3772/api/pairing/revoke && ! listed'
-check "dashboard installs and removes a skill (anthropics/skills internal-comms) with the skills CLI" in_t3 bash -c \
-  'job() { for i in $(seq 180); do j=$(curl -fsS -b /tmp/dashboard-cookies "http://127.0.0.1:3772/api/jobs/$1"); [ "$(jq -r .job.state <<< "$j")" != running ] && break; sleep 1; done; jq -r ".job.error // empty" <<< "$j"; [ "$(jq -r .job.state <<< "$j")" = done ]; }
+check "dashboard installs two skills at once, updates them and removes them (anthropics/skills) with the skills CLI" in_t3 bash -c \
+  'job() { for i in $(seq 180); do j=$(curl -fsS -b /tmp/dashboard-cookies "http://127.0.0.1:3772/api/jobs/$1"); [ "$(jq -r .job.state <<< "$j")" != running ] && break; sleep 1; done; echo "$j" > /tmp/skills-job.json; jq -r ".job.error // empty" <<< "$j"; [ "$(jq -r .job.state <<< "$j")" = done ]; }
    start() { curl -fsS -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "$2" "http://127.0.0.1:3772/api/skills/$1" | jq -r .job.id; }
-   job "$(start install "{\"source\":\"anthropics/skills\",\"skill\":\"internal-comms\"}")" \
-   && test -f ~/.agents/skills/internal-comms/SKILL.md && test -L ~/.claude/skills/internal-comms \
-   && curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/skills | jq -e "any(.installed[]; .folder == \"internal-comms\")" >/dev/null \
-   && job "$(start remove "{\"folder\":\"internal-comms\"}")" && test ! -e ~/.agents/skills/internal-comms'
+   result() { jq -e ".job.result | $1" /tmp/skills-job.json >/dev/null || { jq -c .job.result /tmp/skills-job.json; return 1; }; }
+   job "$(start install "{\"source\":\"anthropics/skills\",\"skills\":[\"internal-comms\",\"brand-guidelines\"]}")" && result "[.installed[].name] | sort == [\"brand-guidelines\", \"internal-comms\"]" \
+   && test -f ~/.agents/skills/internal-comms/SKILL.md && test -L ~/.claude/skills/internal-comms && test -f ~/.agents/skills/brand-guidelines/SKILL.md \
+   && curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/skills | jq -e "[.installed[] | select(.source == \"anthropics/skills\") | .updateName] | sort == [\"brand-guidelines\", \"internal-comms\"]" >/dev/null \
+   && job "$(start update "{}")" && result ".failed == []" \
+   && jq ".skills[\"internal-comms\"].skillFolderHash = \"0000000000000000000000000000000000000000\"" ~/.agents/.skill-lock.json > /tmp/skill-lock.json && cp /tmp/skill-lock.json ~/.agents/.skill-lock.json \
+   && job "$(start update "{\"skills\":[\"internal-comms\"]}")" && result ".updated == [\"internal-comms\"]" \
+   && job "$(start remove "{\"folder\":\"internal-comms\"}")" && job "$(start remove "{\"folder\":\"brand-guidelines\"}")" \
+   && test ! -e ~/.agents/skills/internal-comms && test ! -e ~/.agents/skills/brand-guidelines'
 check "dashboard signs in to Claude: sign-in link shown, the pasted code reaches claude, Claude's answer comes back" in_t3 bash -c \
   'job() { curl -fsS -b /tmp/dashboard-cookies "http://127.0.0.1:3772/api/jobs/$1"; }
    id=$(curl -fsS -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "{\"provider\":\"claude\"}" http://127.0.0.1:3772/api/signin | jq -r .job.id)

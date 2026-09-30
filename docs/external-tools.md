@@ -162,7 +162,17 @@ The `skills` CLI from npm, which installs agent skills from GitHub repositories:
 - **`skills add <repo> --skill <name> -g -y --agent <agents…> --json`**:
   - prints a JSON array on stdout (`name`, `status`, `agents`, `mode`, `security` with `gen`, `socket`,
     `snyk`) and progress on stderr;
-  - an unknown skill fails with "No matching skills found for: <name>".
+  - `--skill` takes several names (`--skill a b`), installed in one run;
+  - a name the repository doesn't have comes back as `"status": "skipped"` with a `reason` ("No matching
+    skill found in source"). The others are still installed, but the exit code is 1; with only unknown
+    names stderr ends in "No matching skills found for: <name>".
+- **`skills ls -g --json`**: the global skills with `name`, `path`, `agents` and `source` (`owner/repo`),
+  `source` null for a skill copied in by hand.
+- **`skills update [names…] -g -y`** re-installs skills whose folder changed upstream, by the hash in the lock
+  file, keeping their agents. Without names it checks every one it installed. It exits 0 whatever happened
+  and has no `--json`; it prints "✓ Updated <name>" per skill, "All global skills are up to date", or "No
+  installed skills found matching: <names>" for names it didn't install (hand-copied ones). There is no
+  command that only checks for updates.
 - **`skills remove <folder> -g -y`** matches folder names, also for skills copied in by hand, and removes the
   copy, the links and the lock entry.
 - It asks skills.sh for the security checks and reports installs to it, unless `DO_NOT_TRACK` or

@@ -63,6 +63,8 @@ ul.list > li > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .chip { display: inline-block; font-size: .75rem; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 .45rem; margin: 0 .1rem .1rem 0; }
 .clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; margin: .15rem 0 0; }
 .clamp.open { display: block; }
+.pick { display: flex; gap: .6rem; align-items: flex-start; color: inherit; font-size: inherit; cursor: pointer; }
+.pick input { margin: .25rem 0 0; }
 details { margin-top: .75rem; }
 summary { cursor: pointer; color: var(--accent); }
 form { display: grid; gap: .6rem; max-width: 22rem; }
@@ -144,8 +146,8 @@ button.danger { color: var(--bad); }
         <form id="skill-form">
           <label for="skill-source">From a GitHub repository (owner/repo) or an https URL</label>
           <input id="skill-source" required autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="mattpocock/skills">
-          <label for="skill-name">Skill</label>
-          <input id="skill-name" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Show the repository's skills, or type a name">
+          <label for="skill-name">Skills</label>
+          <input id="skill-name" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Show the repository's skills, or type names">
           <div class="actions">
             <button id="skill-list" type="button">Show skills</button>
             <button class="primary" type="submit">Install</button>
@@ -734,19 +736,34 @@ async function loadAccess() {
 
 // ---- Skills ----
 
-// Installed skills carry their agents and a Remove button; the others are listed only.
+// Installed skills carry their agents, where they came from, and Update and Remove buttons; the others are
+// listed only. Only a skill that `skills` installed from a repository can be updated.
 function skillList(list, installed) {
   if (list.length === 0) return h("p", { class: "muted" }, "None.");
   return h("ul", { class: "list" }, list.map((skill) => h("li", null,
     h("div", null,
       h("strong", null, skill.name), " ",
       installed && skill.agents.map((agent) => h("span", { class: "chip" }, agent)),
+      installed && skill.source && h("div", { class: "muted" }, `From ${skill.source}`),
       skill.description && h("p", { class: "clamp muted", onclick: (event) => event.currentTarget.classList.toggle("open") }, skill.description),
     ),
-    installed && h("button", { type: "button", class: "danger", onclick: () => {
-      if (confirm(`Remove ${skill.name} from every agent?`)) startSkillsJob("api/skills/remove", { folder: skill.folder });
-    } }, "Remove"),
+    installed && h("div", { class: "actions" },
+      skill.source && skill.updateName && h("button", { type: "button", onclick: () => startSkillsJob("api/skills/update", { skills: [skill.updateName] }) }, "Update"),
+      h("button", { type: "button", class: "danger", onclick: () => {
+        if (confirm(`Remove ${skill.name} from every agent?`)) startSkillsJob("api/skills/remove", { folder: skill.folder });
+      } }, "Remove"),
+    ),
   )));
+}
+
+// What an update did: `skills update` exits 0 either way, so this is the only report.
+function updateResult({ updated, notFound, upToDate }) {
+  return [
+    updated.length > 0 && h("p", null, `Updated ${updated.join(", ")}.`),
+    updated.length === 0 && upToDate && h("p", null, "Everything is up to date."),
+    updated.length === 0 && !upToDate && notFound.length === 0 && h("p", { class: "muted" }, "Nothing was updated."),
+    notFound.length > 0 && h("p", { class: "muted" }, `Not installed from a repository, so not updated: ${notFound.join(", ")}.`),
+  ];
 }
 
 // ---- Jobs: slow actions run on the server; the page polls each one every second until it ends ----
@@ -764,9 +781,13 @@ function renderSkillsJob(job) {
   } }, "Stop");
   const result = job.state !== "done" || !job.result ? null
     : job.result.action === "list" ? skillChoices(job.result)
-    : job.result.action === "install" ? job.result.installed.map((s) => h("p", null,
-        `${s.name} installed for ${s.agents.join(", ")}.`,
-        s.security && muted(` Security checks: Gen ${s.security.gen || "?"}, Socket ${s.security.socket || "?"}, Snyk ${s.security.snyk || "?"}.`)))
+    : job.result.action === "install" ? [
+        ...job.result.installed.map((s) => h("p", null,
+          `${s.name} installed for ${s.agents.join(", ")}.`,
+          s.security && muted(` Security checks: Gen ${s.security.gen || "?"}, Socket ${s.security.socket || "?"}, Snyk ${s.security.snyk || "?"}.`))),
+        (job.result.skipped ?? []).length > 0 && h("p", { class: "bad" }, `Not installed: ${job.result.skipped.map((s) => `${s.name} (${s.error || s.status})`).join(", ")}.`),
+      ]
+    : job.result.action === "update" ? updateResult(job.result)
     : h("p", null, `${job.result.folder} removed.`);
   panel.replaceChildren(h("div", null,
     h("div", { class: "actions" }, h("strong", null, job.title), state, job.state === "running" && stop),
@@ -776,13 +797,32 @@ function renderSkillsJob(job) {
   panel.hidden = false;
 }
 
-// A repository's skills, each with an Install button.
+// A repository's skills, each with a checkbox, and one button that installs the ones ticked. The job is
+// redrawn every second while it runs, but a list is only shown once it is done, so the ticks stay.
 function skillChoices({ source, skills }) {
   if (skills.length === 0) return h("p", { class: "muted" }, "No skills found there.");
-  return h("ul", { class: "list" }, skills.map((skill) => h("li", null,
-    h("div", null, h("strong", null, skill.name), skill.description && h("p", { class: "clamp muted", onclick: (event) => event.currentTarget.classList.toggle("open") }, skill.description)),
-    h("button", { type: "button", onclick: () => startSkillsJob("api/skills/install", { source, skill: skill.name }) }, "Install"),
-  )));
+  const picked = new Set();
+  const install = h("button", { type: "button", class: "primary", disabled: true, onclick: () => {
+    startSkillsJob("api/skills/install", { source, skills: skills.map((s) => s.name).filter((name) => picked.has(name)) });
+  } }, "Install selected");
+  const pick = (name, on) => {
+    if (on) picked.add(name);
+    else picked.delete(name);
+    install.disabled = picked.size === 0;
+    install.textContent = picked.size ? `Install selected (${picked.size})` : "Install selected";
+  };
+  return h("div", null,
+    h("ul", { class: "list" }, skills.map((skill) => h("li", null,
+      h("label", { class: "pick" },
+        h("input", { type: "checkbox", onchange: (event) => pick(skill.name, event.currentTarget.checked) }),
+        h("div", null, h("strong", null, skill.name), skill.description && h("p", { class: "clamp muted", onclick: (event) => {
+          event.preventDefault();
+          event.currentTarget.classList.toggle("open");
+        } }, skill.description)),
+      ),
+    ))),
+    h("div", { class: "actions" }, install),
+  );
 }
 
 async function watchJob(job) {
@@ -831,16 +871,19 @@ async function resumeJobs() {
 $("#skill-list").addEventListener("click", () => startSkillsJob("api/skills/list", { source: $("#skill-source").value.trim() }));
 $("#skill-form").addEventListener("submit", (event) => {
   event.preventDefault();
-  const skill = $("#skill-name").value.trim();
-  if (!skill) return showError($("#skill-error"), "Type a skill's name, or show the repository's skills to pick one.");
-  startSkillsJob("api/skills/install", { source: $("#skill-source").value.trim(), skill });
+  const skills = [...new Set($("#skill-name").value.split(/[\s,]+/).filter(Boolean))];
+  if (!skills.length) return showError($("#skill-error"), "Type skill names, or show the repository's skills to pick them.");
+  startSkillsJob("api/skills/install", { source: $("#skill-source").value.trim(), skills });
 });
 
 async function loadSkills() {
   try {
     const skills = await api("api/skills");
+    const updatable = skills.installed.filter((s) => s.source);
     $("#skills").replaceChildren(
-      h("h3", null, `Installed (${skills.installed.length})`), skillList(skills.installed, true),
+      h("h3", { class: "actions" }, `Installed (${skills.installed.length})`,
+        updatable.length > 0 && h("button", { type: "button", onclick: () => startSkillsJob("api/skills/update", {}) }, "Update all")),
+      skillList(skills.installed, true),
       h("details", null, h("summary", null, `Synced from claude.ai (${skills.synced.length})`), skillList(skills.synced, false)),
       h("details", null, h("summary", null, `Built into Codex (${skills.builtIn.length})`), skillList(skills.builtIn, false)),
       h("p", { class: "note" }, "Shared is ~/.agents/skills, which Codex, Cursor and OpenCode read. Project skills live in each repository (.claude/skills, .agents/skills, …) and are not listed here."),
