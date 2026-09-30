@@ -62,7 +62,7 @@ and this page together.
 
 ## Provider CLIs
 
-Checked in the image with Claude Code 2.1.280–281, Codex 0.156–0.157, Cursor 2026.09.18–23, Grok Build
+Checked in the image with Claude Code 2.1.280–283, Codex 0.156–0.157, Cursor 2026.09.18–23, Grok Build
 1.0.41, OpenCode 1.18.32 and gh 2.101.0.
 
 ### Where logins live
@@ -119,6 +119,22 @@ Checked without a terminal, the way the dashboard runs them.
 
 The codes look like `XXXX-XXXX` or `XXXX-XXXXX`. Grok's link carries the code and Claude's has `code=true`, so
 read the code only after taking the links out.
+
+### Sign-out
+
+Checked without a terminal, the way the dashboard runs them, with made-up logins.
+
+| Provider | Command | What it does |
+| --- | --- | --- |
+| Claude Code | `claude auth logout` | Removes `~/.claude/.credentials.json`, also while `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` is set. Prints "Successfully logged out from your Anthropic account." and exits 0 even when nothing was signed in. |
+| Codex | `codex logout` | Removes the stored login: "Successfully logged out", or "Not logged in"; exit 0 either way. |
+| Cursor | `cursor-agent logout` | "✓ Logout successful", exit 0, also when nothing was signed in. |
+| Grok Build | `grok logout` | Exit 0 either way. A session it recognises prints "Logged out (was signed in as …)"; one it doesn't prints "No cached session to log out of." on stderr and leaves `~/.grok/auth.json` in place. |
+| OpenCode | `opencode auth logout <provider>` | Takes the provider's id or its name as `opencode auth list` shows it (`anthropic` or `Anthropic`), no menu. "Logout successful", or "No credentials found"; exit 0 either way. Without a provider it's a menu. |
+| GitHub | `gh auth logout --hostname <host> --user <login>` | Removes the account from `~/.config/gh/hosts.yml` without revoking the token. Exit 1 when the account isn't there, and while `GH_TOKEN` or `GITHUB_TOKEN` is set: "To erase credentials stored in GitHub CLI, first clear the value from the environment." |
+
+None of them fails in a way the exit code shows, so the dashboard reads the status again afterwards. Signing
+out of GitHub also stops `git push`, which goes through gh.
 
 ### Processes
 

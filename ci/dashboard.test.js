@@ -322,6 +322,82 @@ describe("GitHub", () => {
   });
 });
 
+describe("provider sign-out", () => {
+  const signOutAll = [{ account: "", label: "Sign out" }];
+
+  test("a stored login gets a Sign out button; one from .env gets a note instead", () => {
+    const claudeStatus = d.parseClaudeStatus(`{"loggedIn": true, "authMethod": "claude.ai"}`);
+    assert.deepEqual(d.claudeCard({ installed: true, status: claudeStatus, env: noEnv, loginStored: true }).signOut, signOutAll);
+    const token = d.claudeCard({ installed: true, status: d.parseClaudeStatus(`{"loggedIn": true, "authMethod": "oauth_token"}`), env: { ...noEnv, CLAUDE_CODE_OAUTH_TOKEN: true }, loginStored: false });
+    assert.deepEqual(token.signOut, []);
+    assert.deepEqual(token.notes, ["CLAUDE_CODE_OAUTH_TOKEN comes from .env: remove it there to sign out."]);
+
+    assert.deepEqual(d.codexCard({ installed: true, status: d.parseCodexStatus("Logged in using ChatGPT\n"), env: noEnv }).signOut, signOutAll);
+    assert.deepEqual(d.codexCard({ installed: true, status: d.parseCodexStatus("Not logged in\n"), env: noEnv }).signOut, []);
+
+    const cursorIn = d.parseCursorStatus(`{"isAuthenticated":true}`);
+    assert.deepEqual(d.cursorCard({ installed: true, status: cursorIn, env: noEnv }).signOut, signOutAll);
+    const cursorKey = d.cursorCard({ installed: true, status: cursorIn, env: { ...noEnv, CURSOR_API_KEY: true } });
+    assert.deepEqual(cursorKey.signOut, []);
+    assert.match(cursorKey.notes[0], /^CURSOR_API_KEY comes from .env/);
+
+    assert.deepEqual(d.grokCard({ installed: true, loginStored: true, env: noEnv }).signOut, signOutAll);
+    const grokKey = d.grokCard({ installed: true, loginStored: false, env: { ...noEnv, XAI_API_KEY: true } });
+    assert.deepEqual(grokKey.signOut, []);
+    assert.match(grokKey.notes[0], /^XAI_API_KEY comes from .env/);
+  });
+
+  test("OpenCode: one button per stored provider, a note per variable", () => {
+    const auth = d.parseOpencodeAuth("┌  Credentials\n│\n●  Anthropic \x1b[90mapi\n│\n●  OpenRouter \x1b[90mapi\n└  2 credentials\n┌  Environment\n│\n●  OpenAI \x1b[90mOPENAI_API_KEY\n└  1 environment variable\n");
+    const card = d.opencodeCard({ installed: true, auth });
+    assert.deepEqual(card.signOut, [{ account: "Anthropic", label: "Sign out of Anthropic" }, { account: "OpenRouter", label: "Sign out of OpenRouter" }]);
+    assert.deepEqual(card.notes, ["OpenAI: OPENAI_API_KEY comes from .env: remove it there to sign out."]);
+  });
+
+  test("GitHub: per stored account and host, none while a token variable is set (gh refuses then)", () => {
+    const one = d.parseGhStatus(`{"hosts":{"github.com":[{"state":"success","active":true,"host":"github.com","login":"octocat","tokenSource":"/home/t3codebox/.config/gh/hosts.yml","scopes":"repo"}]}}`);
+    assert.deepEqual(d.githubCard({ installed: true, accounts: one }).signOut, [{ account: "octocat", host: "github.com", label: "Sign out" }]);
+    const two = d.parseGhStatus(`{"hosts":{"github.com":[{"state":"success","active":true,"host":"github.com","login":"octocat","tokenSource":"/h"}],"ghe.example.com":[{"state":"success","active":true,"host":"ghe.example.com","login":"mona","tokenSource":"/h"}]}}`);
+    assert.deepEqual(d.githubCard({ installed: true, accounts: two }).signOut.map((l) => l.label), ["Sign out of octocat", "Sign out of mona on ghe.example.com"]);
+    assert.deepEqual(d.githubCard({ installed: true, accounts: one, env: { GH_TOKEN: true } }).signOut, []);
+    const token = d.parseGhStatus(`{"hosts":{"github.com":[{"state":"success","active":true,"host":"github.com","login":"octocat","tokenSource":"GITHUB_TOKEN"}]}}`);
+    const card = d.githubCard({ installed: true, accounts: token, env: { GH_TOKEN: true } });
+    assert.deepEqual(card.signOut, []);
+    assert.deepEqual(card.notes, ["GITHUB_TOKEN comes from .env: remove it there to sign out."]);
+  });
+
+  test("what the page may ask to sign out of", () => {
+    assert.deepEqual(d.checkSignOut({ provider: "claude" }), { id: "claude", login: { account: "" } });
+    assert.deepEqual(d.checkSignOut({ provider: "opencode", account: "GitHub Copilot" }), { id: "opencode", login: { account: "GitHub Copilot" } });
+    assert.deepEqual(d.checkSignOut({ provider: "github", account: "octocat", host: "github.com" }), { id: "github", login: { account: "octocat", host: "github.com" } });
+    assert.ok(d.checkSignOut({ provider: "t3" }).error);
+    assert.ok(d.checkSignOut({ provider: "toString" }).error);
+    assert.ok(d.checkSignOut({ provider: "github", account: "--help", host: "github.com" }).error);
+    assert.ok(d.checkSignOut({ provider: "github", account: "octocat", host: "-x" }).error);
+    assert.ok(d.checkSignOut({ provider: "opencode", account: "a\nb" }).error);
+    assert.ok(d.checkSignOut({ provider: "opencode", account: 5 }).error);
+  });
+
+  test("the job runs the CLI's sign-out, then fails if the card still lists the login", async (t) => {
+    const bin = tempDir();
+    fs.writeFileSync(path.join(bin, "codex"), "#!/bin/sh\necho \"$@\"\necho Successfully logged out\n", { mode: 0o755 });
+    const pathBefore = process.env.PATH;
+    process.env.PATH = `${bin}:${pathBefore}`;
+    t.after(() => (process.env.PATH = pathBefore));
+    const finished = async (jobs, cardOf) => {
+      const { job } = d.signOutJob(jobs, "codex", { account: "" }, cardOf);
+      while (job.state === "running") await new Promise((resolve) => setTimeout(resolve, 10));
+      return job;
+    };
+    const signedOut = await finished(new d.Jobs(), async () => ({ signOut: [] }));
+    assert.equal(signedOut.state, "done");
+    assert.deepEqual(signedOut.lines, ["logout", "Successfully logged out"]);
+    const still = await finished(new d.Jobs(), async () => ({ signOut: [{ account: "", label: "Sign out" }] }));
+    assert.equal(still.state, "failed");
+    assert.equal(still.error, "Codex is still signed in; see the output.");
+  });
+});
+
 describe("T3", () => {
   test("paired devices keep the id, label, device and times only", () => {
     const sessions = d.parseT3Sessions(`[

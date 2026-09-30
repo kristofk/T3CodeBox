@@ -99,6 +99,10 @@ repository keeps the capitals; GitHub URLs ignore case. Our own settings are upp
     - OpenCode keeps its terminal command, because its sign-in is a different menu per provider (#37).
     - API keys aren't typed into the page: they're long-lived secrets and stay in `.env`.
     - GitHub isn't offered while `GH_TOKEN` is set, because gh uses the token and won't store a sign-in.
+    - Sign-out runs each CLI's own sign-out command and then reads the status again, since none of them
+      exits non-zero when nothing was signed out (#48). A login from `.env` isn't signed out from the page:
+      the card says to remove the variable, as the page never writes `.env`. OpenCode signs out per provider
+      with no menu, so it gets a button per stored provider.
 
 ## Documentation
 
