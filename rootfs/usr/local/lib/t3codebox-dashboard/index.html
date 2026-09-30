@@ -459,6 +459,7 @@ function providerCard(p, git) {
     p.warnings.length > 0 && h("ul", { class: "warnings" }, p.warnings.map((warning) => h("li", null, warning))),
     p.notes.map((note) => h("p", { class: "note" }, note)),
     p.canSignIn && h("div", { class: "actions", "data-signin-start": p.id }, h("button", { class: "primary", type: "button", onclick: () => startSignIn(p.id) }, "Sign in")),
+    p.signOut.length > 0 && h("div", { class: "actions" }, p.signOut.map((login) => h("button", { type: "button", class: "danger", onclick: () => startSignOut(p, login) }, login.label))),
     h("div", { class: "signin", "data-signin": p.id }),
     p.signIn && (p.canSignIn ? h("details", null, h("summary", null, "Or sign in from a terminal"), commandLine(p.signIn)) : commandLine(p.signIn)),
     p.id === "github" && git && gitAuthor(git),
@@ -470,6 +471,17 @@ async function startSignIn(id) {
     watchJob((await api("api/signin", { provider: id })).job);
   } catch (error) {
     if (!(error instanceof SignedOut)) document.querySelector(`[data-signin="${id}"]`)?.replaceChildren(h("p", { class: "bad" }, error.message));
+  }
+}
+
+async function startSignOut(p, login) {
+  const who = login.account ? `${p.name} (${login.account})` : p.name;
+  const also = p.id === "github" ? " git push to GitHub stops working too." : "";
+  if (!confirm(`Sign out of ${who}? Agents that use it stop working until it is signed in again.${also}`)) return;
+  try {
+    watchJob((await api("api/signout", { provider: p.id, account: login.account, host: login.host })).job);
+  } catch (error) {
+    if (!(error instanceof SignedOut)) document.querySelector(`[data-signin="${p.id}"]`)?.replaceChildren(h("p", { class: "bad" }, error.message));
   }
 }
 
@@ -492,6 +504,24 @@ function pasteForm(job) {
     h("div", { class: "actions" }, input, h("button", { class: "primary", type: "submit" }, "Send")),
     error,
   );
+}
+
+// A sign-out inside its provider's card, redrawn only when its state changes so an open Output stays open.
+function renderSignOut(job) {
+  const slot = document.querySelector(`[data-signin="${job.kind.slice("signout:".length)}"]`);
+  if (!slot) return;
+  const key = JSON.stringify([job.id, job.state, job.error]);
+  if (slot.dataset.key === key) {
+    const log = slot.querySelector("pre.log");
+    if (log) log.textContent = job.lines.join("\n");
+    return;
+  }
+  slot.dataset.key = key;
+  const state = job.state === "running" ? muted("running…") : job.state === "done" ? ok("signed out") : job.state === "stopped" ? muted("stopped") : bad(`failed: ${job.error}`);
+  slot.replaceChildren(h("div", { class: "result" },
+    h("p", null, h("strong", null, job.title), " ", state),
+    job.lines.length > 0 && h("details", null, h("summary", null, "Output"), h("pre", { class: "log" }, job.lines.join("\n"))),
+  ));
 }
 
 // A sign-in inside its provider's card: the link (and a QR code, to sign in on a phone), the code to
@@ -752,6 +782,7 @@ async function watchJob(job) {
     while (true) {
       if (job.kind === "skills") renderSkillsJob(job);
       else if (job.kind.startsWith("signin:")) renderSignIn(job);
+      else if (job.kind.startsWith("signout:")) renderSignOut(job);
       if (job.state !== "running") break;
       await sleep(1000);
       try {
@@ -762,7 +793,7 @@ async function watchJob(job) {
       }
     }
     if (job.kind === "skills" && job.state === "done" && job.result?.action !== "list") loadSkills();
-    if (job.kind.startsWith("signin:") && job.state === "done") loadProviders();
+    if ((job.kind.startsWith("signin:") || job.kind.startsWith("signout:")) && job.state === "done") loadProviders();
   } finally {
     watching.delete(job.id);
   }

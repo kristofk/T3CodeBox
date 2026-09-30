@@ -113,6 +113,23 @@ check "dashboard stops a sign-in with its process, and does not count it as a ru
    curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/status | jq -e ".agents.claude == 0" >/dev/null \
    && curl -fsS -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "{\"id\":\"$id\"}" http://127.0.0.1:3772/api/jobs/stop \
    && for i in $(seq 20); do [ "$(curl -fsS -b /tmp/dashboard-cookies "http://127.0.0.1:3772/api/jobs/$id" | jq -r .job.state)" = stopped ] && ! pgrep -f "claude [a]uth login" >/dev/null && exit 0; sleep 1; done; exit 1'
+# Made-up logins: Codex stores an API key without checking it, and the others' files are written by hand.
+check "dashboard signs out of Codex, Claude Code, OpenCode per provider and GitHub, and refuses what is not stored" in_t3 bash -c \
+  'signout() { r=$(curl -sS -w "\n%{http_code}" -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "$1" http://127.0.0.1:3772/api/signout)
+     [ "$(tail -n 1 <<< "$r")" = 202 ] || { head -n 1 <<< "$r"; return 1; }
+     id=$(head -n 1 <<< "$r" | jq -r .job.id)
+     for i in $(seq 60); do j=$(curl -fsS -b /tmp/dashboard-cookies "http://127.0.0.1:3772/api/jobs/$id"); [ "$(jq -r .job.state <<< "$j")" != running ] && break; sleep 1; done
+     jq -r ".job.error // empty" <<< "$j"; [ "$(jq -r .job.state <<< "$j")" = done ]; }
+   refused() { [ "$(curl -s -o /dev/null -w %{http_code} -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "$1" http://127.0.0.1:3772/api/signout)" = 409 ]; }
+   echo sk-t3codebox-test | codex login --with-api-key >/dev/null && signout "{\"provider\":\"codex\"}" && ! codex login status >/dev/null && refused "{\"provider\":\"codex\"}" \
+   && mkdir -p ~/.claude && echo "{\"claudeAiOauth\":{\"accessToken\":\"t3codebox-test\",\"refreshToken\":\"t3codebox-test\",\"expiresAt\":9999999999999,\"scopes\":[\"user:inference\"]}}" > ~/.claude/.credentials.json \
+   && signout "{\"provider\":\"claude\"}" && test ! -e ~/.claude/.credentials.json \
+   && mkdir -p ~/.local/share/opencode && echo "{\"anthropic\":{\"type\":\"api\",\"key\":\"t3codebox-test\"},\"openrouter\":{\"type\":\"api\",\"key\":\"t3codebox-test\"}}" > ~/.local/share/opencode/auth.json \
+   && signout "{\"provider\":\"opencode\",\"account\":\"Anthropic\"}" && [ "$(jq -c keys ~/.local/share/opencode/auth.json)" = "[\"openrouter\"]" ] \
+   && signout "{\"provider\":\"opencode\",\"account\":\"OpenRouter\"}" \
+   && mkdir -p ~/.config/gh && printf "github.com:\n    users:\n        t3codebox-test:\n            oauth_token: gho_t3codebox_test\n    git_protocol: https\n    oauth_token: gho_t3codebox_test\n    user: t3codebox-test\n" > ~/.config/gh/hosts.yml \
+   && if [ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then signout "{\"provider\":\"github\",\"account\":\"t3codebox-test\",\"host\":\"github.com\"}" && ! grep -q t3codebox-test ~/.config/gh/hosts.yml; \
+      else refused "{\"provider\":\"github\",\"account\":\"t3codebox-test\",\"host\":\"github.com\"}" && rm ~/.config/gh/hosts.yml; fi'
 check "dashboard refuses a GitHub sign-in while GH_TOKEN is set" in_t3 bash -c \
   'if [ -z "${GH_TOKEN:-}" ]; then echo "GH_TOKEN not set here; nothing to check"; exit 0; fi
    [ "$(curl -s -o /dev/null -w %{http_code} -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "{\"provider\":\"github\"}" http://127.0.0.1:3772/api/signin)" = 409 ]'

@@ -758,11 +758,16 @@ function qrCode(text, forcedMask = null) {
 
 const docker = (command) => `docker exec -it t3codebox ${command}`;
 const TWO_METHODS = "Two sign-in methods are set; one of them is ignored.";
+const fromEnv = (variable) => `${variable} comes from .env: remove it there to sign out.`;
 
+// signOut lists the stored logins the page can sign out of, each a button: `account` names one for the
+// providers that keep several (OpenCode per provider, gh per account and host), and is "" for the others.
 function card(id, name, { installed = true, version = null, ...fields }) {
-  const base = { id, name, installed, version, signedIn: null, method: null, account: null, details: [], warnings: [], notes: [], signIn: null };
+  const base = { id, name, installed, version, signedIn: null, method: null, account: null, details: [], warnings: [], notes: [], signIn: null, signOut: [] };
   return installed ? { ...base, ...fields } : base;
 }
+
+const signOutAll = { account: "", label: "Sign out" };
 
 function claudeCard({ installed, version, status, env, loginStored }) {
   const usesKey = env.ANTHROPIC_API_KEY || status?.apiKeySource === "ANTHROPIC_API_KEY";
@@ -782,7 +787,9 @@ function claudeCard({ installed, version, status, env, loginStored }) {
     installed, version, method, warnings,
     signedIn: status ? status.signedIn : null,
     account: status?.email ?? null,
+    notes: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"].filter((name) => env[name]).map(fromEnv),
     signIn: status?.signedIn ? null : docker("claude auth login"),
+    signOut: loginStored ? [signOutAll] : [],
   });
 }
 
@@ -798,6 +805,7 @@ function codexCard({ installed, version, status, env }) {
     signedIn: status ? status.signedIn : null,
     warnings: status?.signedIn && env.OPENAI_API_KEY ? [TWO_METHODS] : [],
     signIn: status?.signedIn ? null : docker("codex login --device-auth"),
+    signOut: status?.signedIn ? [signOutAll] : [],
   });
 }
 
@@ -807,7 +815,9 @@ function cursorCard({ installed, version, status, env }) {
     signedIn: status ? status.signedIn : null,
     method: env.CURSOR_API_KEY ? "API key from .env (CURSOR_API_KEY)" : status?.signedIn ? "Cursor login" : null,
     account: status?.email ?? null,
+    notes: env.CURSOR_API_KEY ? [fromEnv("CURSOR_API_KEY")] : [],
     signIn: status && !status.signedIn ? "docker exec -it -e NO_OPEN_BROWSER=1 t3codebox cursor-agent login" : null,
+    signOut: status?.signedIn && !env.CURSOR_API_KEY ? [signOutAll] : [],
   });
 }
 
@@ -817,7 +827,9 @@ function grokCard({ installed, version, loginStored, env }) {
     signedIn: Boolean(loginStored || env.XAI_API_KEY),
     method: env.XAI_API_KEY ? "API key from .env (XAI_API_KEY)" : loginStored ? "Grok login" : null,
     warnings: loginStored && env.XAI_API_KEY ? [TWO_METHODS] : [],
+    notes: env.XAI_API_KEY ? [fromEnv("XAI_API_KEY")] : [],
     signIn: loginStored || env.XAI_API_KEY ? null : docker("grok login --device-auth"),
+    signOut: loginStored ? [signOutAll] : [],
   });
 }
 
@@ -836,7 +848,9 @@ function opencodeCard({ installed, version, auth }) {
     signedIn: auth ? entries.length > 0 : null,
     method: entries.join(", ") || null,
     warnings: twice.map((provider) => `${provider}: a stored sign-in and a variable are both set; one of them is ignored.`),
+    notes: (auth?.environment ?? []).map((e) => `${e.provider}: ${fromEnv(e.variable)}`),
     signIn: auth && !entries.length ? docker("opencode auth login") : null,
+    signOut: (auth?.credentials ?? []).map((c) => ({ account: c.provider, label: `Sign out of ${c.provider}` })),
   });
 }
 
@@ -850,6 +864,9 @@ function githubCard({ installed, version, accounts, env = {} }) {
     return onHost.some((a) => a.envVariable) && onHost.some((a) => !a.envVariable);
   });
   const account = ok.map((a) => (a.host === "github.com" ? a.login : `${a.login} on ${a.host}`)).filter(Boolean).join(", ");
+  // gh refuses to sign out of a stored account while a token variable is set.
+  const token = (accounts ?? []).find((a) => a.envVariable)?.envVariable ?? (env.GH_TOKEN ? "GH_TOKEN" : null);
+  const stored = (accounts ?? []).filter((a) => !a.envVariable && a.login);
   return card("github", "GitHub", {
     installed, version,
     signedIn: accounts ? ok.length > 0 : null,
@@ -860,8 +877,14 @@ function githubCard({ installed, version, accounts, env = {} }) {
     notes: [
       ...(active.some((a) => !a.ok) ? ["GitHub did not accept the token."] : []),
       ...(env.GH_TOKEN && !ok.length ? ["gh uses GH_TOKEN from .env and will not store a sign-in; remove GH_TOKEN to sign in here."] : []),
+      ...(token && ok.length ? [fromEnv(token)] : []),
     ],
     signIn: accounts && !ok.length && !env.GH_TOKEN ? docker("gh auth login") : null,
+    signOut: token ? [] : stored.map((a) => ({
+      account: a.login,
+      host: a.host,
+      label: stored.length > 1 ? `Sign out of ${a.host === "github.com" ? a.login : `${a.login} on ${a.host}`}` : "Sign out",
+    })),
   });
 }
 
@@ -1404,6 +1427,39 @@ function signInJob(jobs, id) {
   });
 }
 
+// Sign-out through each CLI's own command. None of them exits non-zero when nothing was signed out (Grok
+// leaves a session it does not recognise in place), so the job reads the provider's card again afterwards.
+const SIGN_OUT = {
+  claude: () => ["claude", ["auth", "logout"]],
+  codex: () => ["codex", ["logout"]],
+  cursor: () => ["cursor-agent", ["logout"]],
+  grok: () => ["grok", ["logout"]],
+  opencode: ({ account }) => ["opencode", ["auth", "logout", account]],
+  github: ({ account, host }) => ["gh", ["auth", "logout", "--hostname", host, "--user", account]],
+};
+
+const sameLogin = (a, b) => a.account === b.account && (a.host ?? null) === (b.host ?? null);
+
+// What the page may ask to sign out of: an account name or host as a card lists them, nothing an option.
+function checkSignOut(body) {
+  const id = body?.provider;
+  if (typeof id !== "string" || !Object.hasOwn(SIGN_OUT, id)) return { error: "No sign-out for that provider here." };
+  const usable = (value) => typeof value === "string" && value.length <= 100 && !controlCharacters.test(value) && !value.startsWith("-");
+  if (!usable(body.account ?? "") || (body.host !== undefined && !usable(body.host))) return { error: "That account is not usable." };
+  return { id, login: { account: body.account ?? "", ...(body.host !== undefined ? { host: body.host } : {}) } };
+}
+
+// `cardOf(id)` reads the provider's card again, as the page gets it.
+function signOutJob(jobs, id, login, cardOf) {
+  const name = SIGN_IN_NAMES[id];
+  return jobs.start(`signout:${id}`, `Signing out of ${name}${login.account ? ` (${login.account})` : ""}`, async (log, job) => {
+    const [command, args] = SIGN_OUT[id](login);
+    await runLogged(command, args, log, { timeout: 60_000, signal: job.signal });
+    if ((await cardOf(id))?.signOut.some((l) => sameLogin(l, login))) throw new Error(`${name} is still signed in; see the output.`);
+    return { action: "sign-out", provider: id };
+  });
+}
+
 function removeSkillJob(jobs, folder) {
   return jobs.start("skills", `Removing ${folder}`, async (log, job) => {
     await runLogged("skills", ["remove", folder, "-g", "-y"], log, { signal: job.signal });
@@ -1595,6 +1651,19 @@ function main() {
         if (!validJobId(body?.id) || !code || code.length > 1000 || /\s|[\x00-\x1f\x7f]/.test(code)) return sendJson(response, 400, { error: "Expected the code." });
         return jobs.input(body.id, code) ? send(response, 204) : sendJson(response, 409, { error: "That sign-in is not waiting for a code." });
       }
+      case "POST /api/signout": {
+        const signOut = checkSignOut(await readJson(request));
+        if (signOut.error) return sendJson(response, 400, signOut);
+        const { id, login } = signOut;
+        if (jobs.latest(`signin:${id}`)?.state === "running") return sendJson(response, 409, { error: "A sign-in is running there; cancel it first." });
+        const cardOf = async (provider) => (await providers()).find((c) => c.id === provider);
+        if (!(await cardOf(id))?.signOut.some((l) => sameLogin(l, login))) {
+          return sendJson(response, 409, { error: id === "github" && (process.env.GH_TOKEN || process.env.GITHUB_TOKEN)
+            ? "gh does not sign out while GH_TOKEN is set; remove it from .env instead."
+            : "That login is not stored here." });
+        }
+        return startJob(signOutJob(jobs, id, login, cardOf));
+      }
       case "POST /api/skills/list": {
         const body = await readJson(request);
         if (!validSkillSource(body?.source)) return sendJson(response, 400, { error: "Expected a GitHub owner/repo or an https URL." });
@@ -1633,7 +1702,7 @@ module.exports = {
   agentOf, countAgents, parseClaudeStatus, parseCodexStatus, parseCursorStatus, parseOpencodeAuth, parseGhStatus,
   parseT3Sessions, parseT3Pairings, parsePairingCreate, parseSkillFrontmatter, parseDu, userAgentLabel, versionCache,
   outputLines, parseSkillsListing, parseSkillsAdd, validSkillSource, validSkillName, validId, checkGitAuthor,
-  checkPairingRequest, findT3Server, Jobs, qrCode, parseSignIn, withoutDescendants, runLogged,
+  checkPairingRequest, findT3Server, Jobs, qrCode, parseSignIn, withoutDescendants, runLogged, checkSignOut, signOutJob,
   claudeCard, codexCard, cursorCard, grokCard, opencodeCard, githubCard,
   passwordMatches, loadPassword, SessionStore,
 };
