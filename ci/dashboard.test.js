@@ -590,7 +590,7 @@ describe("settings: skills", () => {
 
   test("the update job reports what skills said, and fails when one could not be updated", async (t) => {
     const bin = tempDir();
-    fs.writeFileSync(path.join(bin, "skills"), "#!/bin/sh\necho \"$@\" >&2\nif [ \"$1 $2\" = \"update grill-me\" ]; then echo '  ✗ Failed to update grill-me'; else echo '  ✓ Updated internal-comms'; fi\n", { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, "skills"), "#!/bin/sh\necho \"$@\"\nif [ \"$1 $2\" = \"update grill-me\" ]; then echo '  ✗ Failed to update grill-me'; else echo '  ✓ Updated internal-comms'; fi\n", { mode: 0o755 });
     const pathBefore = process.env.PATH;
     process.env.PATH = `${bin}:${pathBefore}`;
     t.after(() => (process.env.PATH = pathBefore));
