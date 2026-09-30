@@ -356,19 +356,44 @@ function parseSkillsListing(text) {
   return skills;
 }
 
-// `skills add … --json`: one entry per skill, with its status, agents and security assessment.
+// `skills add … --json`: one entry per skill, with its status, agents and security assessment. A name the
+// repository does not have comes back "skipped", with a reason.
 function parseSkillsAdd(text) {
   const list = parseJson(text);
   if (!Array.isArray(list)) return null;
   return list.map((s) => ({
     name: str(s.name),
     status: str(s.status),
-    error: str(s.error),
+    error: str(s.error) || str(s.reason),
     agents: Array.isArray(s.agents) ? s.agents.filter((a) => typeof a === "string") : [],
     security: s.security && typeof s.security === "object"
       ? { gen: str(s.security.gen), socket: str(s.security.socket), snyk: str(s.security.snyk) }
       : null,
   }));
+}
+
+// `skills ls -g --json`: the global skills with their folder and the repository they came from, null for
+// one copied in by hand.
+function parseSkillsLs(text) {
+  const list = parseJson(text);
+  if (!Array.isArray(list)) return null;
+  return list.filter((s) => str(s?.name) && str(s.path)).map((s) => ({ name: s.name, path: s.path, source: str(s.source) }));
+}
+
+// `skills update [names] -g -y`, which exits 0 whatever happened: "✓ Updated <name>" per skill, "All global
+// skills are up to date", "No installed skills found matching: <names>", and "Failed to update <name>".
+function parseSkillsUpdate(text) {
+  const result = { updated: [], failed: [], notFound: [], upToDate: false };
+  for (const line of outputLines(text)) {
+    const updated = line.match(/^\s*✓?\s*Updated (\S+)$/);
+    const failed = line.match(/Failed to update (\S+)/);
+    const notFound = line.match(/No installed skills found matching: (.+)$/);
+    if (updated && !/^\d+$/.test(updated[1])) result.updated.push(updated[1]);
+    else if (failed) result.failed.push(failed[1].replace(/:$/, ""));
+    else if (notFound) result.notFound.push(...notFound[1].split(/,\s*/).filter(Boolean));
+    else if (/up to date/i.test(line)) result.upToDate = true;
+  }
+  return result;
 }
 
 // What `skills add` accepts from the page: a GitHub owner/repo or an https URL. Never something that
@@ -381,6 +406,11 @@ function validSkillSource(source) {
 // A skill's name or folder, as `skills add --skill` and `skills remove` take them.
 function validSkillName(name) {
   return typeof name === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/.test(name);
+}
+
+// Several names at once, for installing or updating: 1 to 100 different ones.
+function validSkillNames(names) {
+  return Array.isArray(names) && names.length > 0 && names.length <= 100 && names.every(validSkillName) && new Set(names).size === names.length;
 }
 
 // T3's pairing and session ids are UUIDs.
@@ -1253,7 +1283,7 @@ function skills() {
       try {
         key = fs.realpathSync(key);
       } catch {}
-      const item = installed.get(key) ?? { ...skill, folder: entry, agents: [] };
+      const item = installed.get(key) ?? { ...skill, folder: entry, path: key, agents: [] };
       item.agents.push(agent);
       installed.set(key, item);
     }
@@ -1264,6 +1294,25 @@ function skills() {
   const builtIn = listDir(path.join(codexDir, ".system")).map((entry) => readSkill(path.join(codexDir, ".system", entry)));
   const sorted = (list) => list.filter(Boolean).sort((a, b) => a.name.localeCompare(b.name));
   return { installed: sorted([...installed.values()]), synced: sorted(synced), builtIn: sorted(builtIn) };
+}
+
+// The installed skills, each with the repository `skills` installed it from (null for one copied in by hand,
+// which it cannot update) and the name it knows it by.
+async function skillsWithSources() {
+  const list = skills();
+  const result = await run("skills", ["ls", "-g", "--json"]);
+  const known = new Map();
+  for (const s of parseSkillsLs(result.stdout) ?? []) {
+    let key = s.path;
+    try {
+      key = fs.realpathSync(key);
+    } catch {}
+    known.set(key, s);
+  }
+  return {
+    ...list,
+    installed: list.installed.map(({ path: key, ...skill }) => ({ ...skill, source: known.get(key)?.source ?? null, updateName: known.get(key)?.name ?? null })),
+  };
 }
 
 async function sizes() {
@@ -1357,7 +1406,7 @@ function restartT3() {
 }
 
 // Runs a CLI for a job: its output goes to the job's log as it comes. Resolves with stdout on exit 0,
-// rejects with the last line of output otherwise. The CLI runs in its own process group, so stopping it
+// rejects with the last line of output otherwise (the error keeps stdout as `stdout`). The CLI runs in its own process group, so stopping it
 // (the job's signal, or the timeout) also stops what it started, such as the native binary behind
 // Codex's npm wrapper: SIGTERM to the group, SIGKILL 10 s later. With `onInput`, stdin stays open and
 // `onInput` gets a function that writes a line to it.
@@ -1408,7 +1457,7 @@ function runLogged(command, args, log, { timeout = 5 * 60_000, logStdout = true,
       clearTimeout(timer);
       if (stopped) reject(new Error(stopped));
       else if (code === 0) resolve(stdout);
-      else reject(new Error(lastLine(output) || `${command} ${exitSignal ? `was stopped (${exitSignal})` : `exited with ${code}`}.`));
+      else reject(Object.assign(new Error(lastLine(output) || `${command} ${exitSignal ? `was stopped (${exitSignal})` : `exited with ${code}`}.`), { stdout }));
     });
   });
 }
@@ -1431,18 +1480,40 @@ function listSkillsJob(jobs, source) {
   }));
 }
 
-function installSkillJob(jobs, source, skill) {
-  return jobs.start("skills", `Installing ${skill} from ${source}`, async (log, job) => {
+// Installs one or more skills in one run. When some names are not in the repository, `skills` installs the
+// others and exits 1 with the list: the job shows both, and fails only when nothing was installed.
+function installSkillJob(jobs, source, names) {
+  const what = names.length === 1 ? names[0] : `${names.length} skills`;
+  return jobs.start("skills", `Installing ${what} from ${source}`, async (log, job) => {
     const agents = await skillAgents();
-    const output = await runLogged("skills", ["add", source, "--skill", skill, "-g", "-y", "--agent", ...agents, "--json"], log, {
-      logStdout: false,
-      signal: job.signal,
-    });
-    const installed = parseSkillsAdd(output) ?? [];
-    if (!installed.length) throw new Error(`${source} has no skill named ${skill}.`);
-    const failed = installed.filter((s) => s.status !== "installed");
-    if (failed.length) throw new Error(failed.map((s) => `${s.name}: ${s.error || s.status}`).join("; "));
-    return { action: "install", source, installed };
+    let output;
+    try {
+      output = await runLogged("skills", ["add", source, "--skill", ...names, "-g", "-y", "--agent", ...agents, "--json"], log, {
+        logStdout: false,
+        signal: job.signal,
+      });
+    } catch (error) {
+      if (job.signal.aborted || !parseSkillsAdd(error.stdout)) throw error;
+      output = error.stdout;
+    }
+    const results = parseSkillsAdd(output) ?? [];
+    const installed = results.filter((s) => s.status === "installed");
+    const skipped = results.filter((s) => s.status !== "installed");
+    if (!installed.length) {
+      throw new Error(skipped.length ? skipped.map((s) => `${s.name}: ${s.error || s.status}`).join("; ") : `${source} has no skill named ${names.join(", ")}.`);
+    }
+    return { action: "install", source, installed, skipped };
+  });
+}
+
+// Updates the named skills, or every one `skills` installed, from their repositories.
+function updateSkillsJob(jobs, names) {
+  return jobs.start("skills", names.length === 1 ? `Updating ${names[0]}` : names.length ? `Updating ${names.length} skills` : "Updating every skill", async (log, job) => {
+    let output = "";
+    await runLogged("skills", ["update", ...names, "-g", "-y"], (text) => log((output = text)), { signal: job.signal });
+    const result = parseSkillsUpdate(output);
+    if (result.failed.length) throw new Error(`Could not update ${result.failed.join(", ")}.`);
+    return { action: "update", ...result };
   });
 }
 
@@ -1652,7 +1723,7 @@ function main() {
       case "GET /api/access":
         return sendJson(response, 200, await sharedAccess());
       case "GET /api/skills":
-        return sendJson(response, 200, skills());
+        return sendJson(response, 200, await skillsWithSources());
       case "GET /api/devices":
         return sendJson(response, 200, { devices: store.list().map((device) => ({ ...device, current: device.id === session.id })) });
       case "POST /api/devices/sign-out": {
@@ -1740,8 +1811,14 @@ function main() {
       case "POST /api/skills/install": {
         const body = await readJson(request);
         if (!validSkillSource(body?.source)) return sendJson(response, 400, { error: "Expected a GitHub owner/repo or an https URL." });
-        if (!validSkillName(body?.skill)) return sendJson(response, 400, { error: "Expected a skill name." });
-        return startJob(installSkillJob(jobs, body.source, body.skill));
+        if (!validSkillNames(body?.skills)) return sendJson(response, 400, { error: "Expected skill names." });
+        return startJob(installSkillJob(jobs, body.source, body.skills));
+      }
+      case "POST /api/skills/update": {
+        const body = await readJson(request);
+        const names = body?.skills ?? [];
+        if (!(Array.isArray(names) && names.length === 0) && !validSkillNames(names)) return sendJson(response, 400, { error: "Expected skill names." });
+        return startJob(updateSkillsJob(jobs, names));
       }
       case "POST /api/skills/remove": {
         const body = await readJson(request);
@@ -1769,7 +1846,8 @@ module.exports = {
   parseVersion, parseMountinfo, describeMount, parseKeyValues, parseMemory, parseCpuMax, parseProcStat, containerUptime,
   agentOf, countAgents, parseClaudeStatus, parseCodexStatus, parseCursorStatus, parseOpencodeAuth, parseGhStatus,
   parseT3Sessions, parseT3Pairings, parsePairingCreate, parseSkillFrontmatter, parseDu, parseMiseList, pinLabel, userAgentLabel, versionCache,
-  outputLines, parseSkillsListing, parseSkillsAdd, validSkillSource, validSkillName, validId, checkGitAuthor,
+  outputLines, parseSkillsListing, parseSkillsAdd, parseSkillsLs, parseSkillsUpdate, validSkillSource, validSkillName, validSkillNames,
+  validId, checkGitAuthor, installSkillJob, updateSkillsJob,
   checkPairingRequest, findT3Server, Jobs, qrCode, parseSignIn, withoutDescendants, runLogged, checkSignOut, signOutJob,
   claudeCard, codexCard, cursorCard, grokCard, opencodeCard, githubCard,
   passwordMatches, loadPassword, SessionStore,

@@ -551,6 +551,63 @@ describe("settings: skills", () => {
     assert.equal(d.parseSkillsAdd("not json"), null);
   });
 
+  test("a name the repository does not have is skipped, with the reason", () => {
+    const results = d.parseSkillsAdd(`[
+  { "name": "not-a-skill", "status": "skipped", "reason": "No matching skill found in source" },
+  { "name": "internal-comms", "status": "installed", "source": "anthropics/skills", "agents": ["Claude Code"], "mode": "copy" }
+]`);
+    assert.deepEqual(results.map((s) => [s.name, s.status, s.error]), [
+      ["not-a-skill", "skipped", "No matching skill found in source"],
+      ["internal-comms", "installed", null],
+    ]);
+  });
+
+  test("installed skills and where they came from", () => {
+    assert.deepEqual(d.parseSkillsLs(`[
+  { "name": "handmade", "path": "/home/t3codebox/.agents/skills/handmade", "scope": "global", "agents": ["Codex", "Cursor"], "source": null, "sourceUrl": null, "sourceType": null },
+  { "name": "internal-comms", "path": "/home/t3codebox/.claude/skills/internal-comms", "scope": "global", "agents": ["Claude Code"],
+    "source": "anthropics/skills", "sourceUrl": "https://github.com/anthropics/skills.git", "sourceType": "github" }
+]`), [
+      { name: "handmade", path: "/home/t3codebox/.agents/skills/handmade", source: null },
+      { name: "internal-comms", path: "/home/t3codebox/.claude/skills/internal-comms", source: "anthropics/skills" },
+    ]);
+    assert.equal(d.parseSkillsLs(""), null);
+  });
+
+  // `skills update … -g -y` (skills 1.7.0), colours and cursor codes included.
+  const ansi = (text) => text.replace(/\{(\d+)\}/g, "\x1b[38;5;$1m").replace(/\{\}/g, "\x1b[0m");
+  test("what an update did", () => {
+    const upToDate = ansi("{145}Checking for skill updates…{}\n\n\r{102}Checking skills from source: anthropics/skills{}\x1b[K\n\r\x1b[K{145}✓ All global skills are up to date{}\n\n\n");
+    assert.deepEqual(d.parseSkillsUpdate(upToDate), { updated: [], failed: [], notFound: [], upToDate: true });
+    const updated = ansi("{145}Checking for skill updates…{}\n\n\r{102}Checking skills from source: anthropics/skills{}\x1b[K\n\r\x1b[K{145}Found 1 global update(s){}\n\n" +
+      "{145}Updating internal-comms…{}\n  {145}✓{} Updated internal-comms\n\n{145}✓ Updated 1 skill(s){}\n\n");
+    assert.deepEqual(d.parseSkillsUpdate(updated), { updated: ["internal-comms"], failed: [], notFound: [], upToDate: false });
+    const handmade = ansi("{145}Updating handmade, other…{}\n\n{102}No installed skills found matching: handmade, other{}\n\n\n");
+    assert.deepEqual(d.parseSkillsUpdate(handmade), { updated: [], failed: [], notFound: ["handmade", "other"], upToDate: false });
+    // Made up: the failure line's wording.
+    assert.deepEqual(d.parseSkillsUpdate("  ✗ Failed to update grill-me: network\n").failed, ["grill-me"]);
+  });
+
+  test("the update job reports what skills said, and fails when one could not be updated", async (t) => {
+    const bin = tempDir();
+    fs.writeFileSync(path.join(bin, "skills"), "#!/bin/sh\necho \"$@\" >&2\nif [ \"$1 $2\" = \"update grill-me\" ]; then echo '  ✗ Failed to update grill-me'; else echo '  ✓ Updated internal-comms'; fi\n", { mode: 0o755 });
+    const pathBefore = process.env.PATH;
+    process.env.PATH = `${bin}:${pathBefore}`;
+    t.after(() => (process.env.PATH = pathBefore));
+    const finished = async (names) => {
+      const { job } = d.updateSkillsJob(new d.Jobs(), names);
+      while (job.state === "running") await new Promise((resolve) => setTimeout(resolve, 10));
+      return job;
+    };
+    const all = await finished([]);
+    assert.equal(all.title, "Updating every skill");
+    assert.deepEqual(all.lines, ["update -g -y", "  ✓ Updated internal-comms"]);
+    assert.deepEqual(all.result, { action: "update", updated: ["internal-comms"], failed: [], notFound: [], upToDate: false });
+    const failed = await finished(["grill-me"]);
+    assert.equal(failed.state, "failed");
+    assert.equal(failed.error, "Could not update grill-me.");
+  });
+
   test("sources and names the CLI gets from the page", () => {
     for (const ok of ["mattpocock/skills", "anthropics/skills", "vercel-labs/agent-skills", "https://github.com/anthropics/skills"]) {
       assert.equal(d.validSkillSource(ok), true, ok);
@@ -561,6 +618,8 @@ describe("settings: skills", () => {
     assert.equal(d.validSkillName("grill-me"), true);
     assert.equal(d.validSkillName("codex:imagegen"), true);
     for (const bad of ["-x", "a b", "", "*", "../x", 7]) assert.equal(d.validSkillName(bad), false, String(bad));
+    assert.equal(d.validSkillNames(["grill-me", "codebase-design"]), true);
+    for (const bad of [[], ["grill-me", "grill-me"], ["grill-me", "-x"], "grill-me", null]) assert.equal(d.validSkillNames(bad), false, JSON.stringify(bad));
   });
 });
 
