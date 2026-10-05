@@ -22,7 +22,8 @@ const REQUEST_FILE = path.join(HOME, ".t3codebox", "hub-request");
 const SCOPES = ["orchestration:read", "orchestration:operate"];
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RENEW_BEFORE_MS = 7 * DAY_MS;
-const CHECK_MS = 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+const CHECK_MS = HOUR_MS;
 const BACKOFF_MS = [15_000, 30_000, 60_000, 120_000, 300_000, 600_000, 1_800_000];
 const IDLE = Infinity;
 const DONE = null;
@@ -30,7 +31,8 @@ const AGENTS = { claude: "claude", codex: "codex", cursor: "cursor-agent", grok:
 
 // ---- Checks: settings in, hub answers in ----
 
-const controlCharacters = /[\x00-\x1f\x7f]/g;
+// Control characters, and the ones that reorder text on screen.
+const controlCharacters = /[\x00-\x1f\x7f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 // Text from a hub, for a log line or the dashboard: one line, no control characters, not too long.
 const sanitize = (text, max = 200) => (typeof text === "string" ? text.replace(controlCharacters, " ").trim().slice(0, max) : "");
 
@@ -106,18 +108,20 @@ function checkEnrolment(body, enrolUrl) {
     if (!url || (url.protocol === "http:" && new URL(enrolUrl).protocol !== "http:")) return { error: "The hub's MCP server address is not usable." };
     mcp = { name, url: url.href };
   }
-  const renewAfter = body.renewAfter === undefined || body.renewAfter === null ? null : Date.parse(body.renewAfter);
+  const renewAfter = body.renewAfter === undefined || body.renewAfter === null ? null : typeof body.renewAfter === "string" ? Date.parse(body.renewAfter) : NaN;
   if (Number.isNaN(renewAfter)) return { error: "The hub's renewAfter is not a time." };
   const boxId = typeof body.boxId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(body.boxId) ? body.boxId : null;
   return { key: body.key, renewalUrl, leaveUrl, mcp, renewAfter, boxId, hubName: sanitize(body.hub?.name, 80) || null };
 }
 
 // When the box sends the hub a new credential: when the hub asked for it (renewAfter), and a week before the
-// one the hub has expires, whichever comes first. A box that was off past that renews as soon as it is back.
+// one the hub has expires, whichever comes first, but never sooner than an hour after the last one, whatever a
+// hub asks. A box that was off past that renews as soon as it is back.
 function renewAt(state) {
   const expires = state?.credential?.expiresAt ? Date.parse(state.credential.expiresAt) - RENEW_BEFORE_MS : Infinity;
   const asked = state?.renewAfter ? Date.parse(state.renewAfter) : Infinity;
-  return Math.min(expires, asked);
+  const floor = state?.renewedAt ? Date.parse(state.renewedAt) + HOUR_MS : -Infinity;
+  return Math.max(Math.min(expires, asked), floor);
 }
 
 // Waits between attempts while the hub does not answer: 15 s doubling to 30 min, a fifth either way, or what the
@@ -300,22 +304,43 @@ class Hub {
     } catch {}
     const token = answer?.body?.access_token;
     const granted = String(answer?.body?.scope ?? "").split(" ");
-    if (answer?.status !== 200 || typeof token !== "string" || granted.length !== SCOPES.length || !SCOPES.every((s) => granted.includes(s))) {
-      if (validId(pairing.id)) await this.cli("t3", ["auth", "pairing", "revoke", pairing.id]);
-      throw new Error(`T3 Code did not issue the hub's token (${answer ? `HTTP ${answer.status}${answer.body?.error ? `, ${sanitize(answer.body.error, 60)}` : ""}` : "no answer"}).`);
-    }
-    const sessions = parseJson((await this.cli("t3", ["auth", "session", "list", "--json"])).stdout);
+    const issued = answer?.status === 200 && typeof token === "string";
+    // The session T3 made for the token, by the pairing's label: without it the box could not revoke the token,
+    // so a token whose session is not found is never handed out.
+    const sessions = issued ? parseJson((await this.cli("t3", ["auth", "session", "list", "--json"])).stdout) : null;
     const session = Array.isArray(sessions) ? sessions.filter((s) => s?.client?.label === label).pop() : null;
+    const sessionId = validId(session?.sessionId) ? session.sessionId : null;
+    if (!issued || !sessionId || granted.length !== SCOPES.length || !SCOPES.every((s) => granted.includes(s))) {
+      if (sessionId) await this.revoke({ sessionId });
+      else if (validId(pairing.id)) await this.cli("t3", ["auth", "pairing", "revoke", pairing.id]);
+      const why = !answer ? "no answer" : !issued ? `HTTP ${answer.status}${answer.body?.error ? `, ${sanitize(answer.body.error, 60)}` : ""}` : !sessionId ? "its session is not listed" : "other scopes than asked for";
+      throw new Error(`T3 Code did not issue the hub's token (${why}).`);
+    }
     return {
       token,
       scopes: SCOPES,
       expiresAt: new Date(this.now() + (Number(answer.body.expires_in) > 0 ? Number(answer.body.expires_in) * 1000 : 30 * DAY_MS)).toISOString(),
-      sessionId: validId(session?.sessionId) ? session.sessionId : null,
+      sessionId,
     };
   }
 
+  // Revokes a token by its T3 session. True when it is gone (or there was none).
   async revoke(credential) {
-    if (validId(credential?.sessionId)) await this.cli("t3", ["auth", "session", "revoke", credential.sessionId]);
+    if (!validId(credential?.sessionId)) return true;
+    return (await this.cli("t3", ["auth", "session", "revoke", credential.sessionId])).code === 0;
+  }
+
+  // Revokes a token the hub no longer has, or keeps its session in `state.stale` to try again at the next step.
+  async retire(state, credential) {
+    if (!(await this.revoke(credential))) state.stale = [...new Set([...(state.stale ?? []), credential.sessionId])];
+    return state;
+  }
+
+  async revokeStale(state) {
+    const left = [];
+    for (const sessionId of state.stale ?? []) if (!(await this.revoke({ sessionId }))) left.push(sessionId);
+    state.stale = left;
+    return left.length === 0;
   }
 
   // Is the hub's token still a T3 session? Not when someone revoked it on the dashboard or with T3's CLI. Unknown
@@ -331,7 +356,7 @@ class Hub {
   // left, so a hub that is down does not leave a trail of tokens behind; else a new one.
   async credential(state) {
     if (state.pending?.token && Date.parse(state.pending.expiresAt) - this.now() > DAY_MS) return state.pending;
-    if (state.pending) await this.revoke(state.pending);
+    if (state.pending) await this.retire(state, state.pending);
     state.pending = await this.mint();
     this.save(state);
     return state.pending;
@@ -365,7 +390,8 @@ class Hub {
     const added = result.stdout.split("\n").filter((agent) => Object.hasOwn(AGENTS, agent));
     if (added.length) this.log(`added the ${state.mcp.name} MCP server for: ${added.join(" ")}`);
     state.mcp.agents = [...new Set([...(state.mcp.agents ?? []), ...added])].sort();
-    this.registered = true;
+    // Not done when t3codebox-mcp failed (another registration held its lock): tried again at the next step.
+    this.registered = result.code === 0;
   }
 
   // Removes the entries this box added, where they are still as it added them.
@@ -381,16 +407,17 @@ class Hub {
   // Enrols with the configured code. `state` holds an earlier attempt's undelivered credential, if any.
   async enrol(cfg, state) {
     if (!cfg.code) {
-      await this.revoke(state.pending);
+      if (state.pending) await this.retire(state, state.pending);
       const error = cfg.codeError || "No enrolment code: set T3CODEBOX_HUB_CODE or T3CODEBOX_HUB_CODE_FILE.";
       if (state.error !== error) this.log(error);
-      this.save({ url: cfg.url, status: "error", error, codeHash: null });
+      this.save({ url: cfg.url, status: "error", error, codeHash: null, stale: state.stale ?? [] });
       return IDLE;
     }
     state = { ...state, url: cfg.url, status: "enrolling", codeHash: hashCode(cfg.code) };
     const box = await this.describe();
     if (!box) {
-      this.save({ ...state, error: "Waiting for T3 Code to answer." });
+      const error = "Waiting for T3 Code to answer.";
+      if (state.error !== error) this.save({ ...state, error });
       return 5000;
     }
     let credential;
@@ -399,7 +426,10 @@ class Hub {
     } catch (error) {
       return this.retry(state, error.message);
     }
-    if (!state.attempts) this.log(`enrolling with the hub at ${new URL(cfg.url).origin}`);
+    if (!state.attempts) {
+      this.log(`enrolling with the hub at ${new URL(cfg.url).origin}`);
+      if (cfg.url.startsWith("http:")) this.log("the hub's address is plain http: the code and T3 token go unencrypted, fine on a private network only");
+    }
     const response = await postJson(this.fetch, cfg.url, { protocol: PROTOCOL, code: cfg.code, box, t3code: tokenBody(credential) });
     if (response.status === 0 || response.status === 408 || response.status === 429 || response.status >= 500) {
       return this.retry(state, response.status ? `The hub answered HTTP ${response.status}.` : `The hub did not answer (${response.problem}).`, response.retryAfter);
@@ -407,14 +437,14 @@ class Hub {
     const answer = response.status >= 200 && response.status <= 299 ? checkEnrolment(response.body, cfg.url) : null;
     if (!answer || answer.error) {
       // Refused, or an answer this box cannot use: reported once, and not tried again with this code.
-      await this.revoke(credential);
       const error = answer ? answer.error : `The hub refused the enrolment: ${refusal(response)}. Set a new code, or press Retry.`;
       this.log(error);
-      this.save({ url: cfg.url, status: answer ? "error" : "rejected", codeHash: state.codeHash, error });
+      this.save(await this.retire({ url: cfg.url, status: answer ? "error" : "rejected", codeHash: state.codeHash, error, stale: state.stale ?? [] }, credential));
       return IDLE;
     }
     const now = new Date(this.now()).toISOString();
     const next = this.save({
+      stale: state.stale ?? [],
       url: cfg.url, status: "connected", error: null, codeHash: state.codeHash, hubName: answer.hubName, boxId: answer.boxId,
       key: answer.key, renewalUrl: answer.renewalUrl, leaveUrl: answer.leaveUrl, mcp: answer.mcp ? { ...answer.mcp, agents: [] } : null,
       credential: { sessionId: credential.sessionId, expiresAt: credential.expiresAt }, pending: null,
@@ -435,10 +465,9 @@ class Hub {
     }
     const response = await postJson(this.fetch, state.renewalUrl, { protocol: PROTOCOL, box, t3code: tokenBody(credential) }, { key: state.key });
     if ([401, 403, 404, 410].includes(response.status)) {
-      await this.revoke(credential);
       const error = `The hub no longer accepts this box: ${refusal(response)}. Enrol again with a new code, or leave.`;
       this.log(error);
-      this.save({ ...state, status: "error", error, pending: null, attempts: 0, nextAttemptAt: null });
+      this.save(await this.retire({ ...state, status: "error", error, pending: null, attempts: 0, nextAttemptAt: null }, credential));
       return IDLE;
     }
     if (response.status < 200 || response.status > 299) {
@@ -446,7 +475,7 @@ class Hub {
     }
     // The hub has the new token. Its renewAfter counts only in an answer of this protocol version.
     const renewAfter = response.body?.protocol === PROTOCOL && typeof response.body.renewAfter === "string" ? Date.parse(response.body.renewAfter) : NaN;
-    if (state.credential?.sessionId !== credential.sessionId) await this.revoke(state.credential);
+    if (state.credential && state.credential.sessionId !== credential.sessionId) await this.retire(state, state.credential);
     this.log("gave the hub a new T3 Code token");
     return this.untilRenewal(this.save({
       ...state, status: "connected", error: null, credential: { sessionId: credential.sessionId, expiresAt: credential.expiresAt }, pending: null,
@@ -461,11 +490,20 @@ class Hub {
     try {
       origin = new URL(state.url).origin;
     } catch {}
-    this.log(`leaving the hub at ${origin}: ${reason}`);
-    await this.unregister(state);
-    await this.revoke(state.credential);
-    await this.revoke(state.pending);
+    if (!state.leaving) this.log(`leaving the hub at ${origin}: ${reason}`);
+    if (state.mcp) {
+      await this.unregister(state);
+      state.mcp = null;
+    }
     if (state.leaveUrl && state.key) await postJson(this.fetch, state.leaveUrl, { protocol: PROTOCOL }, { key: state.key, timeout: 5000 });
+    state.leaveUrl = null;
+    state.key = null;
+    // T3 still starting, say: the tokens are revoked on a later step, and the state is kept until then.
+    for (const which of ["credential", "pending"]) if (await this.revoke(state[which])) state[which] = null;
+    await this.revokeStale(state);
+    state.leaving = Boolean(state.credential || state.pending || state.stale.length);
+    if (state.leaving) this.log("could not revoke the hub's T3 token yet; trying again in 30 s");
+    return !state.leaving;
   }
 
   retry(state, error, retryAfter = null) {
@@ -487,40 +525,54 @@ class Hub {
     const enrolled = () => Boolean(state?.key) && state.status !== "left";
     if (!cfg.url) {
       if (state) {
-        if (enrolled()) await this.leave(state, "T3CODEBOX_HUB_URL is not set");
-        else await this.revoke(state.pending);
+        if (!(await this.leave(state, "T3CODEBOX_HUB_URL is not set"))) {
+          this.save(state);
+          return 30_000;
+        }
         this.forget();
         this.log("hub mode is off; the enrolment is forgotten");
       }
       return DONE;
     }
     if (cfg.error) {
-      if (state?.error !== cfg.error) this.log(cfg.error);
-      this.save({ ...(state ?? { url: cfg.url }), status: "error", error: cfg.error });
+      // Nothing is changed: once the setting is fixed, the box carries on where it was.
+      if (this.lastError !== cfg.error) this.log(cfg.error);
+      this.lastError = cfg.error;
       return IDLE;
     }
     if (state && state.url !== cfg.url) {
-      if (enrolled()) await this.leave(state, "T3CODEBOX_HUB_URL changed");
-      else await this.revoke(state.pending);
+      if (!(await this.leave(state, "T3CODEBOX_HUB_URL changed"))) {
+        this.save(state);
+        return 30_000;
+      }
       this.forget();
       state = null;
     }
-    if (request === "leave") {
-      if (enrolled()) await this.leave(state, "asked on the dashboard");
-      else if (state) await this.revoke(state.pending);
-      this.save({ url: cfg.url, status: "left", codeHash: state?.codeHash ?? hashCode(cfg.code), error: null, leftAt: new Date(this.now()).toISOString() });
+    if (state?.stale?.length) {
+      await this.revokeStale(state);
+      this.save(state);
+    }
+    if (state?.leaving || request === "leave") {
+      if (state && !(await this.leave(state, "asked on the dashboard"))) {
+        this.save({ ...state, status: "left" });
+        return 30_000;
+      }
+      this.save({ url: cfg.url, status: "left", codeHash: state?.codeHash ?? hashCode(cfg.code), error: null, leftAt: state?.leftAt ?? new Date(this.now()).toISOString() });
       return IDLE;
     }
     const newCode = Boolean(cfg.code) && hashCode(cfg.code) !== (state?.codeHash ?? null);
     if (enrolled() && newCode) {
       // A new code enrols the box again, from the start.
-      await this.leave(state, "a new enrolment code is set");
+      if (!(await this.leave(state, "a new enrolment code is set"))) {
+        this.save(state);
+        return 30_000;
+      }
       this.forget();
       state = null;
     }
     if (!enrolled()) {
       if (!state || newCode || request === "retry" || state.status === "enrolling") {
-        return this.enrol(cfg, { pending: state?.pending ?? null, attempts: request === "retry" ? 0 : state?.attempts ?? 0, error: state?.error ?? null });
+        return this.enrol(cfg, { pending: state?.pending ?? null, stale: state?.stale ?? [], attempts: request === "retry" ? 0 : state?.attempts ?? 0, error: state?.error ?? null });
       }
       return IDLE;
     }
@@ -538,7 +590,11 @@ class Hub {
         alive = await this.sessionAlive(state.credential);
       }
       if (alive) return state.nextAttemptAt ? Math.max(1000, Date.parse(state.nextAttemptAt) - this.now()) : this.untilRenewal(state);
-      this.log("the hub's T3 Code token was revoked; giving the hub a new one");
+      // Revoked on this box, on purpose: the hub gets no new token until its owner says so.
+      const error = "The hub's T3 access was revoked on this box. Renew now gives the hub a new token; Leave disconnects it.";
+      this.log(error);
+      this.save({ ...state, status: "error", error, credential: null });
+      return IDLE;
     }
     const box = await this.describe();
     if (!box) return 5000;
