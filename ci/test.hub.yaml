@@ -1,0 +1,24 @@
+# Hub mode for ci/test.sh, on top of compose.yaml and ci/test.compose.yaml: a fake hub (ci/fake-hub.js) next to the
+# box, the box enrolling with it with HUB_CODE, a shared skills folder at /skills, and both passwords chosen the way
+# a hub would at install.
+services:
+  t3codebox:
+    environment:
+      - T3CODEBOX_HUB_URL=http://hub:8080/enrol
+      - T3CODEBOX_HUB_CODE=${HUB_CODE:-}
+      - DASHBOARD_PASSWORD=${TEST_DASHBOARD_PASSWORD:-}
+    volumes:
+      - ${T3CODEBOX_TEST_SKILLS:-./ci-out/skills}:/skills:ro
+  browser:
+    environment:
+      PASSWORD: ${TEST_BROWSER_PASSWORD:-}
+  hub:
+    image: ${T3CODEBOX_IMAGE:-ghcr.io/kristofk/t3codebox}:${T3CODEBOX_TAG:-latest}
+    container_name: t3codebox-test-hub
+    entrypoint: ["/usr/local/bin/node", "/fake-hub.js"]
+    environment:
+      HUB_CODES: t3codebox-test-code-1,t3codebox-test-code-2
+    healthcheck:
+      disable: true
+    volumes:
+      - ./ci/fake-hub.js:/fake-hub.js:ro

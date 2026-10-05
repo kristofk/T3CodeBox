@@ -13,6 +13,8 @@ versions="$OUT/versions-$a.txt"
 export COMPOSE_PROFILES=browser T3CODEBOX_NAME="T3CodeBox test's box"
 export T3CODEBOX_IMAGE=${LOCAL_IMAGE%:*} T3CODEBOX_BROWSER_IMAGE=${LOCAL_BROWSER_IMAGE%:*} T3CODEBOX_TAG=${LOCAL_IMAGE##*:}
 compose() { $DOCKER compose --env-file /dev/null -f compose.yaml -f ci/test.compose.yaml "$@"; }
+# Hub mode on, with a fake hub next to the box (ci/test.hub.yaml).
+compose_hub() { $DOCKER compose --env-file /dev/null -f compose.yaml -f ci/test.compose.yaml -f ci/test.hub.yaml "$@"; }
 c=t3codebox-test
 b=t3codebox-test-browser
 in_t3() { $DOCKER exec "$c" "$@"; }
@@ -77,6 +79,11 @@ check "dashboard answers on 3772 and refuses requests without a session" bash -c
   "for i in \$(seq 30); do [ \"\$($DOCKER exec $c curl -s -o /dev/null -w %{http_code} http://127.0.0.1:3772/api/status)\" = 401 ] && exit 0; sleep 2; done; exit 1"
 check "dashboard signs in with its generated password" in_t3 bash -c \
   'jq -n --arg p "$(cat ~/.t3codebox/dashboard-password)" "{password: \$p}" | curl -fsS -c /tmp/dashboard-cookies -H "Content-Type: application/json" -d @- http://127.0.0.1:3772/api/sign-in'
+check "hub mode off: no hub process, no state, the Hub card says not connected, no shared skill links" in_t3 bash -c \
+  '! pgrep -f "t3codebox-hub/[h]ub.js" && test ! -e ~/.t3codebox/hub.json && test ! -e ~/.t3codebox/shared-skills \
+   && curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/hub | jq -e ". == {configured: false, status: \"off\"}"'
+check "scripts: MCP registration and shared skills, with stand-in agents (ci/scripts.test.sh)" bash -c \
+  "$DOCKER run --rm --entrypoint bash -v \"\$PWD/ci:/ci:ro\" -e BIN=/usr/local/bin $LOCAL_IMAGE /ci/scripts.test.sh"
 check "dashboard status: T3 up, the three volumes mounted, memory in use" in_t3 bash -c \
   'for i in $(seq 30); do curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/status | jq -e ".t3.up and .mounts.home.kind == \"volume\" and .mounts.workspace.kind == \"volume\" and .mounts.toolchains.kind == \"volume\" and .memory.used > 0" && exit 0; sleep 2; done; exit 1'
 check "dashboard lists every provider with its version, and the pairing link" in_t3 bash -c \
@@ -196,5 +203,108 @@ check "Restart T3 on the dashboard restarts the container, and T3 comes back" ba
    && for i in \$(seq 60); do sleep 2; [ \"\$(timeout 10 $DOCKER inspect -f '{{.State.StartedAt}}' $c)\" != \"\$before\" ] \
         && timeout 15 $DOCKER exec $c curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:3773/.well-known/t3/environment 2>/dev/null && exit 0; done; \
    timeout 10 $DOCKER inspect -f 'state {{.State.Status}}, started {{.State.StartedAt}} (was \$before), restarts {{.RestartCount}}' $c; exit 1"
+
+# ---- Hub mode (docs/hub.md), against ci/fake-hub.js; the box is recreated with and without it ----
+
+skills_dir="$(cd "$OUT" && pwd)/skills"
+mkdir -p "$skills_dir/t3codebox-test-skill"
+printf -- '---\nname: t3codebox-test-skill\ndescription: A shared skill for the tests.\n---\n' > "$skills_dir/t3codebox-test-skill/SKILL.md"
+chmod -R a+rX "$skills_dir"
+export T3CODEBOX_TEST_SKILLS=$skills_dir
+# Chosen passwords, as a hub sets them at install: they must work, and never show up in a log.
+export TEST_DASHBOARD_PASSWORD=t3codebox-test-dashboard-$RANDOM$RANDOM TEST_BROWSER_PASSWORD=t3codebox-test-browser-$RANDOM$RANDOM
+hub_seen() { timeout 15 $DOCKER exec t3codebox-test-hub curl -fsS http://127.0.0.1:8080/state; }
+signin_dashboard() {
+  for _ in $(seq 30); do
+    in_t3 bash -c 'jq -n --arg p "${DASHBOARD_PASSWORD:-$(cat ~/.t3codebox/dashboard-password)}" "{password: \$p}" | curl -fsS -c /tmp/dashboard-cookies -H "Content-Type: application/json" -d @- http://127.0.0.1:3772/api/sign-in' 2>/dev/null && return 0
+    sleep 2
+  done
+  return 1
+}
+hub_card() { in_t3 curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/hub; }
+until_card() { for _ in $(seq 60); do hub_card | jq -e "$1" >/dev/null 2>&1 && return 0; sleep 2; done; hub_card; return 1; }
+# Every secret the fake hub has seen, and the code, absent from the box's logs and from every process's arguments.
+no_secrets() {
+  local secrets
+  secrets=$(hub_seen | jq -r '(.codes + .keys + .tokens)[] | select(. != null)') || return 1
+  [ -n "$secrets" ] || return 1
+  ! $DOCKER logs t3codebox-test 2>&1 | grep -F -f <(echo "$secrets") \
+    && ! in_t3 sh -c 'cat /proc/[0-9]*/cmdline 2>/dev/null | tr "\0" "\n"' | grep -F -f <(echo "$secrets")
+}
+
+# A Cursor entry of the hub's name that the user made: hub mode must leave it as it is.
+in_t3 bash -c 'f=~/.cursor/mcp.json; [ -s "$f" ] || echo "{}" > "$f"; jq ".mcpServers.hub = {url: \"https://mine.example.test/mcp\"}" "$f" > /tmp/c && cat /tmp/c > "$f" && cp "$f" ~/.t3codebox-test-cursor.json'
+hub_sessions() { in_t3 t3 auth session list --json | jq '[.[] | select(.client.label // "" | startswith("Hub "))] | length'; }
+
+hub_enrols() {
+  until_card '.status == "connected" and .hub == "T3CodeBox test hub"' \
+    && hub_seen | jq -e --arg v "$version" '.enrolments[0].box | .t3code == $v and .orchestrationProtocol >= 1 and (.agents | length) == 5 and .name == "T3CodeBox test'\''s box"'
+}
+hub_token_scoped() {
+  hub_seen | jq -e '.checks[0] | .authenticated and (.scopes | sort) == ["orchestration:operate", "orchestration:read"] and .pairingLinks == 403'
+}
+hub_mcp_registered() {
+  in_t3 bash -c 'jq -e ".mcpServers.hub.url == \"http://hub:8080/mcp\" and (.mcpServers.hub.headers.Authorization | startswith(\"Bearer \"))" ~/.claude.json \
+    && grep -qx "\[mcp_servers.hub\]" ~/.codex/config.toml && grep -qx "\[mcp_servers.hub.headers\]" ~/.grok/config.toml \
+    && jq -e ".mcp.hub.type == \"remote\"" ~/.config/opencode/opencode.json && cmp ~/.cursor/mcp.json ~/.t3codebox-test-cursor.json \
+    && [ "$(stat -c %a ~/.t3codebox/hub.json)" = 600 ]'
+}
+hub_renews() {
+  for _ in $(seq 45); do hub_seen | jq -e '.renewals >= 1' >/dev/null && break; sleep 2; done
+  hub_seen | jq -e '.renewals >= 1 and .checks[-1].authenticated' >/dev/null || return 1
+  for _ in $(seq 10); do [ "$(hub_sessions)" = 1 ] && return 0; sleep 1; done
+  echo "T3 sessions for the hub: $(hub_sessions)"
+  return 1
+}
+shared_skills_linked() {
+  in_t3 bash -c 'for i in $(seq 30); do test -L ~/.claude/skills/t3codebox-test-skill && break; sleep 1; done
+    test -L ~/.claude/skills/t3codebox-test-skill && test -L ~/.agents/skills/t3codebox-test-skill && test -L ~/.grok/skills/t3codebox-test-skill \
+    && curl -fsS -b /tmp/dashboard-cookies http://127.0.0.1:3772/api/skills | jq -e "any(.installed[]; .name == \"t3codebox-test-skill\" and .mounted and .source == \"/skills\")" \
+    && [ "$(curl -s -o /dev/null -w %{http_code} -b /tmp/dashboard-cookies -H "Content-Type: application/json" -d "{\"folder\":\"t3codebox-test-skill\"}" http://127.0.0.1:3772/api/skills/remove)" = 409 ]'
+}
+hub_left() {
+  in_t3 bash -c 'for i in $(seq 60); do test ! -e ~/.t3codebox/hub.json && break; sleep 2; done
+    test ! -e ~/.t3codebox/hub.json && ! jq -e ".mcpServers.hub" ~/.claude.json >/dev/null && ! grep -q "mcp_servers.hub" ~/.codex/config.toml ~/.grok/config.toml \
+    && ! jq -e ".mcp.hub" ~/.config/opencode/opencode.json >/dev/null && cmp ~/.cursor/mcp.json ~/.t3codebox-test-cursor.json \
+    && jq -e ".mcpServers.browser" ~/.claude.json >/dev/null \
+    && for i in $(seq 30); do test ! -e ~/.claude/skills/t3codebox-test-skill && break; sleep 1; done; test ! -e ~/.claude/skills/t3codebox-test-skill' \
+    && [ "$(hub_sessions)" = 0 ] && hub_seen | jq -e '.leaves == 1'
+}
+hub_leave_and_retry() {
+  until_card '.status == "connected"' >/dev/null \
+    && in_t3 curl -fsS -b /tmp/dashboard-cookies -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:3772/api/hub/leave >/dev/null \
+    && until_card '.status == "left"' >/dev/null && hub_seen | jq -e '.leaves == 2' >/dev/null \
+    && in_t3 bash -c '! jq -e .mcpServers.hub ~/.claude.json >/dev/null' && [ "$(hub_sessions)" = 0 ] \
+    && in_t3 curl -fsS -b /tmp/dashboard-cookies -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:3772/api/hub/retry >/dev/null \
+    && until_card '.status == "rejected" and (.error | test("used already"))' >/dev/null && hub_seen | jq -e '.refused == 1'
+}
+
+HUB_CODE=t3codebox-test-code-1 compose_hub up -d
+wait_healthy && signin_dashboard
+check "hub mode: the box enrols once T3 answers, with its versions and agents" hub_enrols
+check "hub mode: the hub's token works on T3, for threads only: no pairing links" hub_token_scoped
+check "hub mode: the hub's MCP server for every agent with its key; the user's own Cursor entry unchanged" hub_mcp_registered
+check "hub mode: renewed when the hub asks, the old token revoked, the new one works" hub_renews
+check "shared skills: /skills linked in for the agents, listed read-only on the dashboard" shared_skills_linked
+check "hub mode: no enrolment code, key or token in the box's logs or any process's arguments" no_secrets
+chosen_passwords() {
+  for _ in $(seq 60); do
+    [ "$($DOCKER exec $b curl -s -o /dev/null -w "%{http_code}" -u "abc:$TEST_BROWSER_PASSWORD" http://127.0.0.1:3000/)" = 200 ] && break
+    sleep 2
+  done
+  [ "$($DOCKER exec $b curl -s -o /dev/null -w "%{http_code}" -u "abc:$TEST_BROWSER_PASSWORD" http://127.0.0.1:3000/)" = 200 ] \
+    && hub_card >/dev/null \
+    && ! $DOCKER logs t3codebox-test 2>&1 | grep -F -e "$TEST_DASHBOARD_PASSWORD" -e "dashboard password" \
+    && ! $DOCKER logs t3codebox-test-browser 2>&1 | grep -F -e "$TEST_BROWSER_PASSWORD" -e "sign-in: user"
+}
+check "DASHBOARD_PASSWORD and BROWSER_PASSWORD work, and neither is printed in the logs" chosen_passwords
+
+compose up -d
+wait_healthy && signin_dashboard
+check "hub mode switched off: the box leaves, removes only its entries, revokes the token, tells the hub; skill links go" hub_left
+
+HUB_CODE=t3codebox-test-code-2 compose_hub up -d
+wait_healthy && signin_dashboard
+check "hub mode: a new code enrols again; Leave on the dashboard leaves; Retry with the used code is refused" hub_leave_and_retry
 
 exit "$failed"
