@@ -50,7 +50,7 @@ if [ "$kind" = url ]; then
 fi
 private() { if [ "$kind" = url ]; then chmod go-rwx "$1"; fi; }
 
-# A JSON config's entry for this server, by agent: what to write, at which path.
+# A JSON config's entry for this server, by agent.
 entry_json() {
   case "$1:$kind" in
     claude:url) jq -c '{type: "http", url, headers: (.headers // {})}' <<< "$spec" ;;
@@ -61,36 +61,104 @@ entry_json() {
   esac
 }
 
-# The command or URL of a JSON config's entry, whatever form the agent keeps it in.
+# The command or URL of a JSON config's entry, whatever form the agent keeps it in. The spec's comes through the
+# environment, like everything else that could be private.
+export MCP_NAME=$name MCP_KEY=$kind MCP_MATCH=$match
 json_match='(.command | if type == "array" then .[0] else . end) // .url // empty'
+
+# replace <file> <tmp>: puts tmp in the file's place in one step, with the file's mode, so an agent reading the
+# file never sees half of it. <file> is the real file, not a link to it.
+replace() {
+  chmod --reference="$1" "$2" 2>/dev/null
+  mv -f "$2" "$1"
+}
 
 # add_json <file> <section> <agent>: add the entry if <section>.<name> is missing; skip files that are not plain JSON.
 add_json() {
-  local file=$1 section=$2 agent=$3 tmp
+  local file section=$2 agent=$3 tmp
+  file=$(readlink -m "$1")
   mkdir -p "$(dirname "$file")"
   [ -s "$file" ] || echo '{}' > "$file"
   if ! jq empty "$file" 2>/dev/null; then
     log "skipped $file: not plain JSON; add the $name MCP server by hand"
     return 1
   fi
-  jq -e --arg s "$section" --arg n "$name" '.[$s][$n] != null' "$file" >/dev/null && return 1
-  tmp=$(mktemp)
-  ENTRY=$(entry_json "$agent") jq --arg s "$section" --arg n "$name" '.[$s][$n] = (env.ENTRY | fromjson)' "$file" > "$tmp" \
-    && cat "$tmp" > "$file" && private "$file"
-  rm -f "$tmp"
+  jq -e --arg s "$section" '.[$s][env.MCP_NAME] != null' "$file" >/dev/null 2>&1 && return 1
+  tmp=$(mktemp "$file.XXXXXX")
+  if ENTRY=$(entry_json "$agent") jq --arg s "$section" '.[$s][env.MCP_NAME] = (env.ENTRY | fromjson)' "$file" > "$tmp" 2>/dev/null; then
+    replace "$file" "$tmp"
+    private "$file"
+  else
+    rm -f "$tmp"
+    log "skipped $file: its $section is not an object; add the $name MCP server by hand"
+    return 1
+  fi
 }
 
 # remove_json <file> <section>: remove <section>.<name> if it still has this spec's command or URL.
 remove_json() {
-  local file=$1 section=$2 tmp
+  local file section=$2 tmp
+  file=$(readlink -m "$1")
   [ -s "$file" ] && jq empty "$file" 2>/dev/null || return 1
-  jq -e --arg s "$section" --arg n "$name" --arg m "$match" ".[\$s][\$n] | ($json_match) == \$m" "$file" >/dev/null 2>&1 || return 1
-  tmp=$(mktemp)
-  jq --arg s "$section" --arg n "$name" 'del(.[$s][$n])' "$file" > "$tmp" && cat "$tmp" > "$file"
-  rm -f "$tmp"
+  jq -e --arg s "$section" ".[\$s][env.MCP_NAME] | ($json_match) == env.MCP_MATCH" "$file" >/dev/null 2>&1 || return 1
+  tmp=$(mktemp "$file.XXXXXX")
+  if jq --arg s "$section" 'del(.[$s][env.MCP_NAME])' "$file" > "$tmp"; then
+    replace "$file" "$tmp"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
 }
 
-has_toml() { grep -qs "^\[mcp_servers\.$name\]" "$1"; }
+# toml <file> exists|ours: is mcp_servers.<name> in the file, in whatever form TOML allows (quoted, dotted,
+# inline); ours: with this spec's command or URL. Exit 1 for no, 2 when the file is not valid TOML. Read with
+# Python's tomllib, not with a pattern, so a user's table in another form is never missed.
+toml() {
+  python3 - "$1" "$2" <<'PY'
+import os, sys, tomllib
+try:
+    with open(sys.argv[1], "rb") as f:
+        data = tomllib.load(f)
+except FileNotFoundError:
+    sys.exit(1)
+except Exception:
+    sys.exit(2)
+servers = data.get("mcp_servers")
+entry = servers.get(os.environ["MCP_NAME"]) if isinstance(servers, dict) else None
+if sys.argv[2] == "exists":
+    sys.exit(0 if entry is not None else 1)
+sys.exit(0 if isinstance(entry, dict) and entry.get(os.environ["MCP_KEY"]) == os.environ["MCP_MATCH"] else 1)
+PY
+}
+
+# add_toml <file> <agent>: append the server's tables if the file has no entry of that name, and keep the result
+# only if it is still valid TOML with the entry in it.
+add_toml() {
+  local file agent=$2 tmp
+  file=$(readlink -m "$1")
+  toml "$file" exists
+  case $? in
+    0) return 1 ;;
+    2) log "skipped $file: not valid TOML; add the $name MCP server by hand"; return 1 ;;
+  esac
+  mkdir -p "$(dirname "$file")"
+  tmp=$(mktemp "$file.XXXXXX")
+  [ -e "$file" ] && cat "$file" > "$tmp"
+  if [ "$kind" = command ]; then
+    printf '\n[mcp_servers.%s]\ncommand = "%s"\n' "$name" "$command" >> "$tmp"
+  else
+    toml_remote "$agent" >> "$tmp"
+  fi
+  if toml "$tmp" ours; then
+    [ -e "$file" ] || : > "$file"
+    replace "$file" "$tmp"
+    private "$file"
+  else
+    rm -f "$tmp"
+    log "skipped $file: adding the $name MCP server would not leave valid TOML; add it by hand"
+    return 1
+  fi
+}
 
 # The TOML tables of a remote server, in the form each agent's own `mcp add` writes.
 toml_remote() {
@@ -99,27 +167,33 @@ toml_remote() {
     jq -r '(.headers // {}) | if length > 0 then "http_headers = { " + (to_entries | map("\"\(.key)\" = \"\(.value)\"") | join(", ")) + " }" else empty end' <<< "$spec"
   else
     echo "enabled = true"
-    jq -r '(.headers // {}) | if length > 0 then "\n[mcp_servers.'"$name"'.headers]\n" + (to_entries | map("\(.key) = \"\(.value)\"") | join("\n")) else empty end' <<< "$spec"
+    jq -r '(.headers // {}) | if length > 0 then "\n[mcp_servers." + env.MCP_NAME + ".headers]\n" + (to_entries | map("\(.key) = \"\(.value)\"") | join("\n")) else empty end' <<< "$spec"
   fi
 }
 
-# remove_toml <file>: remove [mcp_servers.<name>] and its subtables if its command or URL is still this spec's.
+# remove_toml <file>: remove [mcp_servers.<name>] and its subtables if they are still this spec's, in the form this
+# script writes them. Comments in between are kept: they are someone else's.
 remove_toml() {
-  local file=$1 tmp
-  has_toml "$file" || return 1
-  awk -v table="[mcp_servers.$name]" -v key="$kind" -v want="$match" '
-    /^\[/ { inside = ($0 == table) }
-    inside && $0 ~ "^" key "[ \t]*=" { value = $0; sub(/^[^=]*=[ \t]*"/, "", value); sub(/"[ \t]*$/, "", value); found = (value == want) }
-    END { exit !found }' "$file" || return 1
-  tmp=$(mktemp)
-  awk -v table="[mcp_servers.$name]" -v sub_prefix="[mcp_servers.$name." '
-    /^\[/ { skip = ($0 == table || index($0, sub_prefix) == 1) }
-    !skip { lines[++n] = $0 }
+  local file tmp
+  file=$(readlink -m "$1")
+  toml "$file" ours || return 1
+  tmp=$(mktemp "$file.XXXXXX")
+  MCP_TABLE="[mcp_servers.$name]" awk '
+    BEGIN { table = ENVIRON["MCP_TABLE"]; prefix = substr(table, 1, length(table) - 1) "." }
+    /^\[/ { skip = ($0 == table || index($0, prefix) == 1) }
+    !skip || /^[ \t]*#/ { lines[++n] = $0 }
     END {
       while (n > 0 && lines[n] == "") n--
       for (i = 1; i <= n; i++) print lines[i]
-    }' "$file" > "$tmp" && cat "$tmp" > "$file"
-  rm -f "$tmp"
+    }' "$file" > "$tmp"
+  # Still there (a table in another form), or no longer valid TOML: the file stays as it was.
+  toml "$tmp" exists
+  if [ $? = 1 ]; then
+    replace "$file" "$tmp"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
 }
 
 # add: every agent; remove: the agents named.
@@ -129,35 +203,26 @@ changed=()
 
 # Claude Code: its own command for a local server, as it always was; the file for a remote one, whose key
 # would otherwise be a command-line argument.
+claude_json=${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json
 if command -v claude >/dev/null && wanted claude; then
   if [ "$action" = add ]; then
-    if ! { [ -s "$HOME/.claude.json" ] && jq -e --arg n "$name" '.mcpServers[$n] != null' "$HOME/.claude.json" >/dev/null 2>&1; }; then
+    if ! { [ -s "$claude_json" ] && jq -e '.mcpServers[env.MCP_NAME] != null' "$claude_json" >/dev/null 2>&1; }; then
       if [ "$kind" = command ]; then
         claude mcp add --scope user "$name" -- "$command" >/dev/null 2>&1 && changed+=(claude)
-      elif add_json "$HOME/.claude.json" mcpServers claude; then
+      elif add_json "$claude_json" mcpServers claude; then
         changed+=(claude)
       fi
     fi
-  elif remove_json "$HOME/.claude.json" mcpServers; then
+  elif remove_json "$claude_json" mcpServers; then
     changed+=(claude)
   fi
 fi
 
 # Codex
 if command -v codex >/dev/null && wanted codex; then
-  config="$HOME/.codex/config.toml"
+  config="${CODEX_HOME:-$HOME/.codex}/config.toml"
   if [ "$action" = add ]; then
-    mkdir -p "$(dirname "$config")"
-    touch "$config"
-    if ! has_toml "$config"; then
-      if [ "$kind" = command ]; then
-        printf '\n[mcp_servers.%s]\ncommand = "%s"\n' "$name" "$command" >> "$config"
-      else
-        toml_remote codex >> "$config"
-        private "$config"
-      fi
-      changed+=(codex)
-    fi
+    add_toml "$config" codex && changed+=(codex)
   elif remove_toml "$config"; then
     changed+=(codex)
   fi
@@ -176,18 +241,15 @@ fi
 
 # Grok Build: like Claude Code, its own command for a local server.
 if command -v grok >/dev/null && wanted grok; then
-  config="$HOME/.grok/config.toml"
-  if [ "$action" = add ]; then
-    if ! has_toml "$config"; then
-      if [ "$kind" = command ]; then
-        grok mcp add --scope user "$name" "$command" >/dev/null 2>&1 && changed+=(grok)
-      else
-        mkdir -p "$(dirname "$config")"
-        toml_remote grok >> "$config"
-        private "$config"
-        changed+=(grok)
-      fi
-    fi
+  config="${GROK_HOME:-$HOME/.grok}/config.toml"
+  if [ "$action" = add ] && [ "$kind" = command ]; then
+    toml "$config" exists
+    case $? in
+      1) grok mcp add --scope user "$name" "$command" >/dev/null 2>&1 && changed+=(grok) ;;
+      2) log "skipped $config: not valid TOML; add the $name MCP server by hand" ;;
+    esac
+  elif [ "$action" = add ]; then
+    add_toml "$config" grok && changed+=(grok)
   elif remove_toml "$config"; then
     changed+=(grok)
   fi

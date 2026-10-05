@@ -158,6 +158,45 @@ else
 fi
 teardown
 
+setup
+mkdir -p "$HOME/.codex" "$HOME/.grok" "$HOME/.config/opencode" "$HOME/dotfiles" "$T/claude"
+printf '[mcp_servers."hub"]\nurl = "https://mine.example.test/mcp"\n' > "$HOME/.codex/config.toml"
+printf '[mcp_servers.browser\nbroken = \n' > "$HOME/.grok/config.toml"
+echo '{"mcp": "not an object"}' > "$HOME/.config/opencode/opencode.json"
+echo '{}' > "$HOME/dotfiles/cursor-mcp.json" && mkdir -p "$HOME/.cursor" && ln -s ../dotfiles/cursor-mcp.json "$HOME/.cursor/mcp.json"
+cp "$HOME/.codex/config.toml" "$T/codex.before"; cp "$HOME/.grok/config.toml" "$T/grok.before"; cp "$HOME/.config/opencode/opencode.json" "$T/opencode.before"
+SECRET_URL='{"url": "https://hub.example.test/mcp?token=QUERY-SECRET", "headers": {"Authorization": "Bearer '"$KEY"'"}}'
+out=$(CLAUDE_CONFIG_DIR=$T/claude t3codebox-mcp add hub <<< "$SECRET_URL" 2>"$T/err" | sort | xargs)
+if [ "$out" = "claude cursor" ] && [ -s "$T/claude/.claude.json" ] && [ ! -e "$HOME/.claude.json" ] \
+  && cmp -s "$HOME/.codex/config.toml" "$T/codex.before" && cmp -s "$HOME/.grok/config.toml" "$T/grok.before" && grep -q 'grok/config.toml: not valid TOML' "$T/err" \
+  && cmp -s "$HOME/.config/opencode/opencode.json" "$T/opencode.before" && grep -q 'not an object' "$T/err" \
+  && [ -L "$HOME/.cursor/mcp.json" ] && jq -e '.mcpServers.hub' "$HOME/dotfiles/cursor-mcp.json" >/dev/null; then
+  pass "a user's table in another TOML form, invalid TOML, a JSON section of another type are left alone; CLAUDE_CONFIG_DIR and linked files are followed"
+else
+  fail "other forms" "$out $(cat "$T/err")"
+fi
+echo '{"url": "https://hub.example.test/mcp?token=QUERY-SECRET"}' > "$T/spec"
+out=$(CLAUDE_CONFIG_DIR=$T/claude t3codebox-mcp remove hub claude cursor < "$T/spec" | sort | xargs)
+cp "$T/args" "$T/args-both"
+if [ "$out" = "claude cursor" ] && ! grep -q 'QUERY-SECRET' "$T/args-both" && [ -L "$HOME/.cursor/mcp.json" ]; then
+  pass "a URL is never a command-line argument either, adding or removing"
+else
+  fail "URL in arguments" "$out $(grep QUERY-SECRET "$T/args-both" | head -n 2)"
+fi
+teardown
+
+setup codex
+mcp "$HUB" add hub >/dev/null
+printf '\n# my important note about the next table\n[mcp_servers.mine]\ncommand = "/bin/true"\n' >> "$HOME/.codex/config.toml"
+echo '{"url": "https://hub.example.test/mcp"}' | t3codebox-mcp remove hub codex >/dev/null
+if grep -qx '# my important note about the next table' "$HOME/.codex/config.toml" && grep -qx '\[mcp_servers.mine\]' "$HOME/.codex/config.toml" \
+  && ! grep -q 'hub' "$HOME/.codex/config.toml"; then
+  pass "removing a TOML table keeps the user's comments around it"
+else
+  fail "comments" "$(cat "$HOME/.codex/config.toml")"
+fi
+teardown
+
 # ---- t3codebox-shared-skills ----
 
 skill() { mkdir -p "$SKILLS/$1" && printf -- '---\nname: %s\n---\n' "$1" > "$SKILLS/$1/SKILL.md"; }
