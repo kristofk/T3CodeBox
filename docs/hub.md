@@ -191,6 +191,11 @@ The hub answers a failure with a status and a JSON body:
 "Stops" means until the box's owner sets a new code or presses Retry. While it tries again, the box sends the same
 token every time, so a hub that answers late gets the token the box will use.
 
+An answer can get lost after the hub has used up the code. So a hub that gets a used code together with the very
+token it stored for that code answers again as it did the first time (with a new key, which replaces the first,
+if it keeps only a hash of it); with any other token, it refuses. A refusal for an unsupported box (`422`) leaves
+the code unused, so the box can enrol with it once it is updated.
+
 ### Renewal
 
 T3 Code's tokens last 30 days. The box sends a new one a week before the hub's expires, or at `renewAfter` if
