@@ -1,6 +1,6 @@
 #!/bin/bash
-# Entrypoint of the t3codebox image: user setup, browser tool registration, shared skills, the dashboard, then the
-# command (`t3 serve`).
+# Entrypoint of the t3codebox image: user setup, browser tool registration, shared skills, hub mode, the
+# dashboard, then the command (`t3 serve`).
 set -euo pipefail
 
 # The uid set with compose `user:` becomes the t3codebox user (name and home) for every process,
@@ -37,6 +37,16 @@ fi
 # Skills in a shared folder mounted at /skills, linked in for the agents and checked again every minute. Without
 # the folder, one pass removes links an earlier start made, if any.
 (t3codebox-shared-skills --watch &)
+
+# Hub mode (docs/hub.md): with T3CODEBOX_HUB_URL set, the box enrols with the hub once T3 answers, and keeps its
+# token renewed; restarted when it fails, so a hub that is down never holds up T3. Without the variable, a box that
+# was enrolled leaves once and forgets the enrolment.
+if [ -n "${T3CODEBOX_HUB_URL:-}" ] || [ -e "$HOME/.t3codebox/hub.json" ]; then
+  (while ! /usr/local/bin/node /usr/local/lib/t3codebox-hub/hub.js; do
+    echo "t3codebox: hub mode stopped; restarting it in 30 s" >&2
+    sleep 30
+  done &)
+fi
 
 # The dashboard on port 3772, restarted whenever it exits, so it never takes T3 down. DASHBOARD=off: none.
 # The image's Node by path: a `node` on PATH may be a mise shim.
