@@ -71,9 +71,14 @@ Both images are released together, with the same tags, for amd64 and arm64.
    (a `compose.yaml` from before the toolchains volume).
 4. Starts `t3codebox-browser-setup` in the background. It waits up to 30 s for the browser container and then
    adds a `browser` MCP server to each agent's user config, only where one is missing.
-5. Starts the dashboard in a restart loop in the background, unless `DASHBOARD=off`. It runs on
+5. Starts `t3codebox-shared-skills --watch` in the background: it links the skills in `/skills` in for the agents
+   and checks again every minute while the folder is there. Without it, one pass removes links an earlier start
+   made, and it ends. See [Hub mode and shared skills](#hub-mode-and-shared-skills).
+6. With `T3CODEBOX_HUB_URL` set, or an enrolment left from an earlier start, starts hub mode in the background,
+   restarted 30 s after it fails. Otherwise nothing.
+7. Starts the dashboard in a restart loop in the background, unless `DASHBOARD=off`. It runs on
    `/usr/local/bin/node` by path, never a mise shim.
-6. Replaces itself with the command, `t3 serve` by default. When `t3 serve` exits, tini exits and the
+8. Replaces itself with the command, `t3 serve` by default. When `t3 serve` exits, tini exits and the
    container stops.
 
 ## Users and data
@@ -134,13 +139,46 @@ Agents install languages and tools with mise, without root (#11).
   `t3codebox-browser-mcp`. That launcher resolves the browser's IP on each start, because DevTools refuses
   Host headers that are not an IP or `localhost`. It passes `--cdp-endpoint http://<ip>:9223`.
 - Page snapshots go to `~/.cache/playwright-mcp`, not into the agent's project.
-- The registrations, each added only when missing and never changed afterwards:
+- The registrations, made with `t3codebox-mcp`, each added only when missing and never changed afterwards:
   - Claude Code: `claude mcp add --scope user` (`~/.claude.json`);
   - Codex: `~/.codex/config.toml`;
   - OpenCode: `~/.config/opencode/opencode.json`, skipped when `opencode.jsonc` exists;
   - Cursor: `~/.cursor/mcp.json`;
   - Grok Build: `grok mcp add --scope user` (`~/.grok/config.toml`).
 - `BROWSER_MCP=off` skips all of them.
+- `t3codebox-mcp add|remove <name>` is the one place that writes MCP entries, for the browser and for a hub. The
+  server comes as JSON on stdin, a local command or a URL with headers, so a key in a header is never a command-line
+  argument. A local server goes through `claude mcp add` and `grok mcp add` as before; a remote one is written to
+  their files directly, in the form their own `mcp add --transport http --header` writes, and a file that gets a key
+  is made readable by the user only. `remove` takes out only the named agents' entries whose command or URL is still
+  the one given. Names, URLs and header values that could end a TOML or JSON string are refused. A lock in
+  `~/.t3codebox` keeps two registrations at one start from overwriting each other.
+
+## Hub mode and shared skills
+
+Off unless set; [docs/hub.md](hub.md) is the user's guide and the protocol.
+
+- **Hub mode** is `rootfs/usr/local/lib/t3codebox-hub/hub.js`, Node's standard library only, started by the
+  entrypoint when `T3CODEBOX_HUB_URL` is set or `~/.t3codebox/hub.json` exists. One loop: each step reads the
+  settings and the state file, does one thing (enrol, renew, leave, or nothing) and says how long to wait; between
+  steps it looks for a request from the dashboard (`~/.t3codebox/hub-request`) every 2 s. It ends once hub mode is
+  off and the enrolment is gone.
+- **The token for the hub:** `t3 auth pairing create --ttl 5m` for a single-use credential, exchanged at T3's
+  `POST /oauth/token` on loopback for an access token with the scopes `orchestration:read orchestration:operate`
+  only (see [External tools](external-tools.md#access-tokens-for-other-services)). The pairing's label (`Hub
+  <id>`) becomes the session's, which is how the box finds the session to revoke later.
+- **State:** `~/.t3codebox/hub.json`, mode 600: the hub's addresses and key, the status and last error, a hash of the
+  code it is about, the T3 session the hub holds, and a token minted for an attempt that hasn't got through, reused
+  for every retry while it has a day left. The code itself and a delivered token are never kept.
+- **Secrets** stay out of logs, command lines and the dashboard: the code and token go only in request bodies, the
+  key only in `Authorization` headers and, through `t3codebox-mcp`'s stdin, the agents' configs. Text from a hub is
+  shown as one line of plain text.
+- **Requests to the hub** never follow redirects, time out after 15 s, and read at most 64 KB. Renewal and leave
+  addresses must be on the enrolment address's origin.
+- **Shared skills:** `t3codebox-shared-skills` links each folder with a `SKILL.md` in `/skills` into
+  `~/.agents/skills`, `~/.claude/skills` and `~/.grok/skills` for the agents that are installed, where nothing of
+  that name is. The links it made are listed in `~/.t3codebox/shared-skills`; it removes one only when it is in that
+  list and still points where it made it. It never writes to `/skills`.
 
 ## The dashboard
 
@@ -157,6 +195,12 @@ step). The icon is copied from `Icon/final/adaptive/` at build time.
   - `~/.t3codebox/dashboard-sessions.json` keeps a SHA-256 of each cookie, a label from the user agent and
     the sign-in and last-use times. A session lasts a year from its last use.
   - The file also keeps a scrypt fingerprint of the password, so a new password signs every device out.
+  - Behind a proxy that signs users in itself, `DASHBOARD_PROXY_SECRET` (32 characters or more) in the
+    `X-T3CodeBox-Proxy-Secret` header signs a request in, compared in constant time like the password, and never for
+    a request with `Sec-Fetch-Site: cross-site`. Such a request gets no cookie.
+- **Under a path prefix:** every address the page uses is relative, the sign-in is a `fetch`, the cookie has
+  `Path=/`, and the server never redirects, so a proxy can serve it under a prefix it strips. The page adds a
+  missing trailing slash with `history.replaceState` before its first request.
 - **Requests:**
   - POSTs must be JSON, which a cross-site form can't send.
   - The page's Content-Security-Policy allows only its own inline script and style, by hash.
@@ -170,7 +214,11 @@ step). The icon is copied from `Icon/final/adaptive/` at build time.
     the toolchains, with `du` for their sizes.
   - Environment variables are only checked for being set.
 - **Jobs:** slow actions are jobs: skill list, install, update and remove, provider sign-ins and
-  sign-outs, and removing unused toolchains (`mise prune --yes`).
+  sign-outs, removing unused toolchains (`mise prune --yes`), and the hub's Retry and Leave, which leave a request
+  for hub mode and wait until its state file changes.
+- **Hub card:** the status comes with every health poll, from the state file through the same code hub mode uses,
+  without the key or tokens. Skills whose folder is in `/skills` are listed as read-only, and removing one is
+  refused.
   - A POST starts one and returns, and the page polls it every second.
   - One job per kind runs at a time, and the latest per kind is kept so a reloaded page picks it up.
   - A job can be stopped, which stops the CLI's whole process group: SIGTERM, then SIGKILL after 10 s.
@@ -180,8 +228,10 @@ step). The icon is copied from `Icon/final/adaptive/` at build time.
   restart policy brings it back.
 - **QR codes:** its own encoder in `server.js` (byte mode, error correction level M, versions 1–40), for
   pairing links and sign-in links.
-- **Tests:** `ci/dashboard.test.js` (`node:test`) runs from `make check` in `node:lts-slim`. It isn't shipped
-  in the image.
+- **Tests:** `ci/dashboard.test.js` (`node:test`) runs from `make check` in `node:lts-slim`, and so does
+  `ci/hub.test.js` for hub mode, against a fake hub and a fake T3 on loopback. Neither is shipped in the image.
+  `ci/scripts.test.sh` tests `t3codebox-mcp` and `t3codebox-shared-skills` with stand-in agent CLIs; `make test`
+  runs it in the built image.
 
 ## CI and releases
 
@@ -218,4 +268,8 @@ step). The icon is copied from `Icon/final/adaptive/` at build time.
     in Codex's and OpenCode's resolved config;
   - the browser's password, cookie and stream;
   - no zombie processes;
-  - the MCP registrations, and an agent-side MCP connection driving the browser.
+  - the MCP registrations, and an agent-side MCP connection driving the browser;
+  - with hub mode off, that nothing of it runs; then, with `ci/test.hub.yaml`, a fake hub (`ci/fake-hub.js`) next to
+    the box: enrolment, the token's scopes as T3 sees them, the MCP entries next to a user's own, renewal, shared
+    skills, no secret in logs or command lines, leaving when the setting goes, Leave and Retry on the dashboard, and
+    chosen dashboard and browser passwords that are not printed.

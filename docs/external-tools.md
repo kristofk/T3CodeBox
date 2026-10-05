@@ -60,6 +60,47 @@ and this page together.
   rebuild of the latest nightly's commit.
 - T3 declined official container support (pingdotgg/t3code#5287).
 
+### Access tokens for other services
+
+Checked in T3's source at v0.0.45 (`apps/server/src/auth/`, `packages/contracts/src/auth.ts`) and against the
+running server.
+
+- **Scopes:** `orchestration:read`, `orchestration:operate`, `terminal:operate`, `review:write`, `access:read`,
+  `access:write`, `relay:read`, `relay:write`. Each RPC method needs one (`RpcAuthorization.ts`):
+  `orchestration.dispatchCommand`, which creates threads and starts and stops turns, needs `orchestration:operate`;
+  subscribing to and reading threads needs `orchestration:read`; the terminal needs `terminal:operate`; listing and
+  making pairing links and sessions needs `access:read` and `access:write`.
+- **`t3 auth session issue`** (`--ttl`, `--label`, `--token-only`, `--json`) issues a bearer token with every scope,
+  the administrative set. It has no option for fewer.
+- **`t3 auth pairing create`** issues a single-use credential with the standard client scopes: `orchestration:read`,
+  `orchestration:operate`, `terminal:operate`, `review:write`, `relay:read`.
+- **`POST /oauth/token`**, form-encoded, exchanges such a credential (RFC 8693): `grant_type` is
+  `urn:ietf:params:oauth:grant-type:token-exchange`, `subject_token` the credential, `subject_token_type`
+  `urn:t3:params:oauth:token-type:environment-bootstrap`, `requested_token_type`
+  `urn:ietf:params:oauth:token-type:access_token`. An optional `scope` (space-separated) narrows the token to a
+  subset of the credential's scopes; one outside it is refused. The answer has `access_token`, `token_type`
+  (`Bearer`), `expires_in` (30 days, T3's session default) and `scope`. The new session takes the pairing's label.
+- **`GET /api/auth/session`** with `Authorization: Bearer <token>` answers `authenticated`, `scopes` and
+  `expiresAt`. A token without `access:read` gets 403 from `GET /api/auth/pairing-links`.
+- **`/.well-known/t3/environment`** also has `environmentId` and `orchestrationProtocolVersion` (1 in 0.0.45;
+  missing means 1).
+
+### MCP servers over HTTP
+
+How each agent keeps a remote (streamable HTTP) MCP server with a header. Checked by running Claude Code 2.1,
+Codex 0.160, Grok Build 1.0.46 and OpenCode 1.18 (`mcp add` where it takes a header, `mcp list` or `debug config`
+reading the entry back); Cursor's as its documentation gives it:
+
+- Claude Code, `~/.claude.json`: `mcpServers.<name> = {"type": "http", "url": …, "headers": {…}}`, file mode 600.
+- Codex, `~/.codex/config.toml`: `[mcp_servers.<name>]` with `url` and `http_headers = { "Name" = "value" }`;
+  `codex mcp list --json` shows it as `streamable_http`. `codex mcp add --url` takes no header, only
+  `--bearer-token-env-var`.
+- Grok Build, `~/.grok/config.toml`: `[mcp_servers.<name>]` with `url` and `enabled = true`, then
+  `[mcp_servers.<name>.headers]`.
+- Cursor, `~/.cursor/mcp.json`: `mcpServers.<name> = {"url": …, "headers": {…}}`.
+- OpenCode, `opencode.json`: `mcp.<name> = {"type": "remote", "url": …, "headers": {…}, "enabled": true}`;
+  `opencode debug config` masks the header values.
+
 ## Provider CLIs
 
 Checked in the image with Claude Code 2.1.280–283, Codex 0.156–0.157, Cursor 2026.09.18–23, Grok Build
