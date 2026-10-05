@@ -139,6 +139,13 @@ button.danger { color: var(--bad); }
       </div>
     </section>
     <section>
+      <h2>Hub</h2>
+      <div class="panel">
+        <div id="hub"><p class="muted">Loading…</p></div>
+        <div id="hub-job" class="job" hidden></div>
+      </div>
+    </section>
+    <section>
       <h2>Skills</h2>
       <div class="panel">
         <div id="skills"><p class="muted">Loading…</p></div>
@@ -173,6 +180,14 @@ button.danger { color: var(--bad); }
 <script>
 "use strict";
 // Everything shown comes from CLIs, repositories and user agents: it goes in as text, never as HTML.
+
+// Every address here is relative, so the page works under a path prefix that a proxy strips. Opened as
+// /prefix rather than /prefix/, those addresses would miss the prefix: add the slash, and load the icons again.
+if (!location.pathname.endsWith("/")) {
+  history.replaceState(null, "", `${location.pathname}/${location.search}${location.hash}`);
+  for (const element of document.querySelectorAll("[src='icon.svg']")) element.src = "icon.svg";
+  for (const element of document.querySelectorAll("link[href='icon.svg']")) element.href = "icon.svg";
+}
 
 const $ = (selector) => document.querySelector(selector);
 const NAMES = { t3: "T3", claude: "Claude Code", codex: "Codex", cursor: "Cursor", grok: "Grok Build", opencode: "OpenCode", gh: "gh", skills: "skills", node: "Node" };
@@ -324,6 +339,7 @@ function renderHealth(s) {
   rows.push(row("Versions", Object.entries(s.versions).filter(([, v]) => v).map(([id, v]) => `${NAMES[id]} ${v}`).join(", ")));
   $("#health").replaceChildren(...rows);
   setReds("health", red);
+  renderHub(s.hub);
 }
 
 let healthTimer = null;
@@ -387,6 +403,80 @@ $("#sizes-button").addEventListener("click", async (event) => {
     button.disabled = false;
   }
 });
+
+// ---- Hub: from the status, every 5 s; redrawn only when it changes ----
+
+const until = (time) => {
+  const seconds = (new Date(time).getTime() - Date.now()) / 1000;
+  return seconds > 0 ? `in ${duration(seconds)}` : "now";
+};
+
+function renderHub(hub) {
+  const box = $("#hub");
+  const key = JSON.stringify(hub);
+  if (!hub || box.dataset.key === key) return;
+  box.dataset.key = key;
+  const where = hub.hub && hub.origin ? `${hub.hub} (${hub.origin})` : hub.hub || hub.origin || "the hub";
+  const button = (label, action, question, danger) => h("button", { type: "button", class: danger ? "danger" : null, onclick: () => {
+    if (!question || confirm(question)) startHubJob(action);
+  } }, label);
+  const retry = button(hub.status === "connected" ? "Renew now" : "Retry", "retry", null, false);
+  const leave = button("Leave", "leave", `Leave ${where}? The hub's MCP server is removed from the agents and its access to T3 is revoked. The box enrols again only with a new code or Retry.`, true);
+  const red = [];
+  let rows;
+  if (hub.status === "off") {
+    rows = [h("p", { class: "muted" }, "Not connected to a hub."),
+      h("p", { class: "note" }, "T3CODEBOX_HUB_URL and an enrolment code from a hub connect this box to it: see docs/hub.md.")];
+  } else if (hub.status === "connected") {
+    rows = [
+      h("p", null, ok("Connected"), ` to ${where}`),
+      hub.enrolledAt && h("p", { class: "muted" }, `Since ${new Date(hub.enrolledAt).toLocaleString()}`),
+      hub.mcp && h("p", { class: "muted" }, `MCP server ${hub.mcp.name}${hub.mcp.agents.length ? ` for ${hub.mcp.agents.join(", ")}` : ""}`),
+      hub.renewBy && h("p", { class: "muted" }, `T3 access renewed ${until(hub.renewBy)}${hub.expiresAt ? `; the current one expires ${new Date(hub.expiresAt).toLocaleString()}` : ""}`),
+      hub.error && h("p", { class: "bad" }, hub.error),
+      hub.nextAttemptAt && h("p", { class: "muted" }, `Next attempt ${until(hub.nextAttemptAt)}`),
+      h("div", { class: "actions" }, retry, leave),
+    ];
+  } else if (hub.status === "enrolling") {
+    rows = [
+      h("p", null, muted(`Enrolling with ${where}…`)),
+      hub.error && h("p", { class: hub.nextAttemptAt ? "bad" : "muted" }, hub.error),
+      hub.nextAttemptAt && h("p", { class: "muted" }, `Next attempt ${until(hub.nextAttemptAt)}`),
+      h("div", { class: "actions" }, retry),
+    ];
+  } else if (hub.status === "left") {
+    rows = [h("p", { class: "muted" }, `Left ${where}. Set a new enrolment code, or Retry with this one.`), h("div", { class: "actions" }, retry)];
+  } else if (hub.status === "leaving") {
+    rows = [h("p", { class: "muted" }, `T3CODEBOX_HUB_URL is not set: leaving ${where}.`)];
+  } else {
+    red.push(`Hub: ${hub.error || "not connected."}`);
+    rows = [
+      h("p", null, bad(hub.status === "rejected" ? "Enrolment refused" : "Error"), ` (${where})`),
+      hub.error && h("p", null, hub.error),
+      hub.configured && h("div", { class: "actions" }, retry, hub.enrolled && leave),
+    ];
+  }
+  box.replaceChildren(...rows.filter(Boolean));
+  setReds("hub", red);
+}
+
+function renderHubJob(job) {
+  const panel = $("#hub-job");
+  panel.replaceChildren(h("p", null, h("strong", null, job.title), " ",
+    job.state === "running" ? muted("…") : job.state === "done" ? ok("done") : job.state === "stopped" ? muted("stopped") : bad(`failed: ${job.error}`)));
+  panel.hidden = job.state === "done";
+}
+
+async function startHubJob(action) {
+  try {
+    watchJob((await api(`api/hub/${action}`, {})).job);
+  } catch (error) {
+    if (!(error instanceof SignedOut)) {
+      $("#hub-job").replaceChildren(h("p", { class: "bad" }, error.message));
+      $("#hub-job").hidden = false;
+    }
+  }
+}
 
 // ---- Providers: on open and on Refresh ----
 
@@ -728,7 +818,13 @@ $("#pair-form").addEventListener("submit", async (event) => {
 
 async function loadAccess() {
   try {
-    renderAccess(await api("api/access"));
+    const access = await api("api/access");
+    // T3CODEBOX_PUBLIC_URL, when set, is T3's address for new links.
+    if (access.publicUrl && !$("#pair-base").dataset.public) {
+      $("#pair-base").value = access.publicUrl;
+      $("#pair-base").dataset.public = "1";
+    }
+    renderAccess(access);
   } catch (error) {
     if (!(error instanceof SignedOut)) $("#access").replaceChildren(failed(error));
   }
@@ -744,10 +840,10 @@ function skillList(list, installed) {
     h("div", null,
       h("strong", null, skill.name), " ",
       installed && skill.agents.map((agent) => h("span", { class: "chip" }, agent)),
-      installed && skill.source && h("div", { class: "muted" }, `From ${skill.source}`),
+      installed && skill.source && h("div", { class: "muted" }, skill.mounted ? `From the shared folder ${skill.source}, read-only` : `From ${skill.source}`),
       skill.description && h("p", { class: "clamp muted", onclick: (event) => event.currentTarget.classList.toggle("open") }, skill.description),
     ),
-    installed && h("div", { class: "actions" },
+    installed && !skill.mounted && h("div", { class: "actions" },
       skill.source && skill.updateName && h("button", { type: "button", onclick: () => startSkillsJob("api/skills/update", { skills: [skill.updateName] }) }, "Update"),
       h("button", { type: "button", class: "danger", onclick: () => {
         if (confirm(`Remove ${skill.name} from every agent?`)) startSkillsJob("api/skills/remove", { folder: skill.folder });
@@ -834,6 +930,7 @@ async function watchJob(job) {
       else if (job.kind === "toolchains") renderToolchainsJob(job);
       else if (job.kind.startsWith("signin:")) renderSignIn(job);
       else if (job.kind.startsWith("signout:")) renderSignOut(job);
+      else if (job.kind === "hub") renderHubJob(job);
       if (job.state !== "running") break;
       await sleep(1000);
       try {
@@ -845,6 +942,7 @@ async function watchJob(job) {
     }
     if (job.kind === "skills" && job.state === "done" && job.result?.action !== "list") loadSkills();
     if (job.kind === "toolchains" && job.state === "done") loadToolchains();
+    if (job.kind === "hub" && job.state === "done") loadHealth();
     if ((job.kind.startsWith("signin:") || job.kind.startsWith("signout:")) && job.state === "done") loadProviders();
   } finally {
     watching.delete(job.id);
@@ -887,6 +985,8 @@ async function loadSkills() {
       h("details", null, h("summary", null, `Synced from claude.ai (${skills.synced.length})`), skillList(skills.synced, false)),
       h("details", null, h("summary", null, `Built into Codex (${skills.builtIn.length})`), skillList(skills.builtIn, false)),
       h("p", { class: "note" }, "Shared is ~/.agents/skills, which Codex, Cursor and OpenCode read. Project skills live in each repository (.claude/skills, .agents/skills, …) and are not listed here."),
+      skills.sharedFolder && h("p", { class: "note" }, `Skills in ${skills.sharedFolder} are linked in for every agent; change them there.`),
+      !skills.agentsFolderWritable && h("p", { class: "bad" }, "~/.agents/skills is read-only here, so skills cannot be installed or removed. Mount a shared skills folder at /skills instead."),
     );
   } catch (error) {
     if (!(error instanceof SignedOut)) $("#skills").replaceChildren(failed(error));

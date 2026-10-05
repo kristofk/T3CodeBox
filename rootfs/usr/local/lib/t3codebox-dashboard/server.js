@@ -11,11 +11,14 @@ const fs = require("node:fs");
 const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
+const hub = require("../t3codebox-hub/hub.js");
 
 const PORT = 3772;
 const HOME = process.env.HOME || os.homedir();
 const WORKSPACE = "/workspace";
 const TOOLCHAINS = "/toolchains";
+// The shared skills folder that t3codebox-shared-skills links in for the agents (docs/hub.md).
+const SHARED_SKILLS = process.env.T3CODEBOX_SKILLS_DIR || "/skills";
 const PASSWORD_FILE = path.join(HOME, ".t3codebox", "dashboard-password");
 const SESSIONS_FILE = path.join(HOME, ".t3codebox", "dashboard-sessions.json");
 const COOKIE = "t3codebox_dashboard";
@@ -1191,6 +1194,11 @@ async function browserStatus() {
   return { container: true, tool, devtools: response?.status === 200, version: str(parseJson(response?.body)?.Browser) };
 }
 
+// Hub mode, as the page shows it: the state t3codebox-hub keeps, without its secrets.
+function hubStatus(env = process.env, file = hub.STATE_FILE) {
+  return hub.publicState(hub.readState(file), hub.config(env, () => ""));
+}
+
 // The health section, polled every 5 s: files, Node's own view and two local HTTP checks; no CLIs.
 async function health() {
   const [t3, browser, cpu, versions] = await Promise.all([t3Status(), browserStatus(), cpuUsage(), cliVersions()]);
@@ -1206,6 +1214,7 @@ async function health() {
     mounts: { home: folder(mounts, HOME), workspace: folder(mounts, WORKSPACE), toolchains: folder(mounts, TOOLCHAINS) },
     agents: countAgents(withoutDescendants(processes(), process.pid)),
     browser,
+    hub: hubStatus(),
   };
 }
 
@@ -1236,12 +1245,18 @@ async function providers() {
   ].map((c) => ({ ...c, canSignIn: Boolean(c.signIn && SIGN_IN[c.id]) })); // a Sign in button wherever a sign-in is due
 }
 
+// T3CODEBOX_PUBLIC_URL: T3's address as devices reach it (behind a proxy, say), for new pairing links.
+function publicT3Url(env = process.env) {
+  const checked = checkPairingRequest({ baseUrl: env.T3CODEBOX_PUBLIC_URL, ttl: PAIRING_TTLS[0] });
+  return checked.error ? null : checked.baseUrl;
+}
+
 async function access() {
   const [sessions, pairings] = await Promise.all([
     run("t3", ["auth", "session", "list", "--json"]),
     run("t3", ["auth", "pairing", "list", "--json"]),
   ]);
-  return { sessions: parseT3Sessions(sessions.stdout), pairings: parseT3Pairings(pairings.stdout) };
+  return { sessions: parseT3Sessions(sessions.stdout), pairings: parseT3Pairings(pairings.stdout), publicUrl: publicT3Url() };
 }
 
 function listDir(dir) {
@@ -1261,19 +1276,20 @@ function readSkill(dir) {
 
 // User skills per agent folder (where `npx skills add -g` installs). One skill linked into several
 // folders is listed once, with every agent that has it. Project skills live in the repositories.
-function skills() {
-  const config = process.env.XDG_CONFIG_HOME || path.join(HOME, ".config");
-  const claudeDir = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(HOME, ".claude"), "skills");
-  const codexDir = path.join(process.env.CODEX_HOME || path.join(HOME, ".codex"), "skills");
+function skills(home = HOME, shared = SHARED_SKILLS, env = process.env) {
+  const config = env.XDG_CONFIG_HOME || path.join(home, ".config");
+  const claudeDir = path.join(env.CLAUDE_CONFIG_DIR || path.join(home, ".claude"), "skills");
+  const codexDir = path.join(env.CODEX_HOME || path.join(home, ".codex"), "skills");
   const folders = [
     ["Claude Code", claudeDir],
     ["Codex", codexDir],
-    ["Cursor", path.join(HOME, ".cursor", "skills")],
-    ["Grok Build", path.join(process.env.GROK_HOME || path.join(HOME, ".grok"), "skills")],
+    ["Cursor", path.join(home, ".cursor", "skills")],
+    ["Grok Build", path.join(env.GROK_HOME || path.join(home, ".grok"), "skills")],
     ["OpenCode", path.join(config, "opencode", "skills")],
-    ["Shared", path.join(HOME, ".agents", "skills")],
+    ["Shared", path.join(home, ".agents", "skills")],
   ];
   const installed = new Map();
+  const mounted = (key) => key.startsWith(`${shared}/`);
   for (const [agent, dir] of folders) {
     for (const entry of listDir(dir)) {
       if (dir === claudeDir && entry === "synced") continue;
@@ -1283,7 +1299,7 @@ function skills() {
       try {
         key = fs.realpathSync(key);
       } catch {}
-      const item = installed.get(key) ?? { ...skill, folder: entry, path: key, agents: [] };
+      const item = installed.get(key) ?? { ...skill, folder: entry, path: key, agents: [], mounted: mounted(key) };
       item.agents.push(agent);
       installed.set(key, item);
     }
@@ -1293,7 +1309,21 @@ function skills() {
   );
   const builtIn = listDir(path.join(codexDir, ".system")).map((entry) => readSkill(path.join(codexDir, ".system", entry)));
   const sorted = (list) => list.filter(Boolean).sort((a, b) => a.name.localeCompare(b.name));
-  return { installed: sorted([...installed.values()]), synced: sorted(synced), builtIn: sorted(builtIn) };
+  let writable = true;
+  try {
+    fs.accessSync(path.join(home, ".agents", "skills"), fs.constants.W_OK);
+  } catch (error) {
+    writable = error.code === "ENOENT";
+  }
+  return {
+    installed: sorted([...installed.values()]),
+    synced: sorted(synced),
+    builtIn: sorted(builtIn),
+    // Skills from the shared folder are linked in and changed only there; ~/.agents/skills mounted read-only
+    // instead takes no installs.
+    sharedFolder: fs.existsSync(shared) ? shared : null,
+    agentsFolderWritable: writable,
+  };
 }
 
 // The installed skills, each with the repository `skills` installed it from (null for one copied in by hand,
@@ -1311,7 +1341,8 @@ async function skillsWithSources() {
   }
   return {
     ...list,
-    installed: list.installed.map(({ path: key, ...skill }) => ({ ...skill, source: known.get(key)?.source ?? null, updateName: known.get(key)?.name ?? null })),
+    installed: list.installed.map(({ path: key, ...skill }) =>
+      skill.mounted ? { ...skill, source: SHARED_SKILLS, updateName: null } : { ...skill, source: known.get(key)?.source ?? null, updateName: known.get(key)?.name ?? null }),
   };
 }
 
@@ -1593,12 +1624,57 @@ function pruneToolchainsJob(jobs) {
   });
 }
 
+// Retry (or renew now) and Leave, for the hub: t3codebox-hub takes the request within 2 s; the job waits until
+// the hub's state changes, a minute and a half at most.
+function hubJob(jobs, action, { requestFile = hub.REQUEST_FILE, stateFile = hub.STATE_FILE, timeout = 90_000, env = process.env } = {}) {
+  return jobs.start("hub", action === "leave" ? "Leaving the hub" : "Contacting the hub", async (log, job) => {
+    const before = read(stateFile);
+    fs.mkdirSync(path.dirname(requestFile), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(requestFile, `${action}\n`, { mode: 0o600 });
+    for (const end = Date.now() + timeout; Date.now() < end && !job.signal.aborted; ) {
+      await sleep(1000);
+      const now = read(stateFile);
+      if (now !== before && !fs.existsSync(requestFile)) {
+        const status = hubStatus(env, stateFile);
+        // Still trying: the attempt was made, and the card shows when the next one is.
+        if (status.status === "enrolling" && !status.error) continue;
+        return { action, hub: status };
+      }
+    }
+    if (job.signal.aborted) throw new Error("Stopped.");
+    throw new Error("Hub mode did not take the request; see docker logs t3codebox.");
+  });
+}
+
 function removeSkillJob(jobs, folder) {
   return jobs.start("skills", `Removing ${folder}`, async (log, job) => {
     await runLogged("skills", ["remove", folder, "-g", "-y"], log, { signal: job.signal });
     if (skills().installed.some((s) => s.folder === folder)) throw new Error(`skills did not remove ${folder}.`);
     return { action: "remove", folder };
   });
+}
+
+// ---- Sign-in through a trusted proxy ----
+
+// DASHBOARD_PROXY_SECRET: a proxy in front of the dashboard that has signed the user in itself sends this secret in
+// the X-T3CodeBox-Proxy-Secret header, and the request counts as signed in. Off when unset; refused when shorter
+// than 32 characters. Safe only when the dashboard is reachable through that proxy alone (docs/hub.md).
+const PROXY_HEADER = "x-t3codebox-proxy-secret";
+const PROXY_SESSION = { id: "proxy", label: "Signed in through the proxy" };
+
+function proxySecret(env = process.env) {
+  const secret = env.DASHBOARD_PROXY_SECRET ?? "";
+  if (!secret) return { secret: null };
+  if (secret.length < 32) return { secret: null, error: "DASHBOARD_PROXY_SECRET is shorter than 32 characters; sign-in through the proxy is off." };
+  return { secret };
+}
+
+// The proxy's secret, compared in constant time. Never from a cross-site request: the proxy adds the header to
+// whatever the browser sends it.
+function proxySignedIn(request, secret) {
+  const sent = request.headers[PROXY_HEADER];
+  if (!secret || typeof sent !== "string" || request.headers["sec-fetch-site"] === "cross-site") return false;
+  return passwordMatches(sent, secret);
 }
 
 // ---- HTTP ----
@@ -1661,6 +1737,8 @@ function contentSecurityPolicy(page) {
 function main() {
   const password = loadPassword();
   const store = new SessionStore(SESSIONS_FILE, password);
+  const proxy = proxySecret();
+  if (proxy.error) console.error(`t3codebox: ${proxy.error}`);
   const page = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
   const icon = read(path.join(__dirname, "icon.svg"));
   const pageHeaders = { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": contentSecurityPolicy(page), "X-Frame-Options": "DENY" };
@@ -1682,11 +1760,11 @@ function main() {
     const url = new URL(request.url, "http://dashboard");
     const route = `${request.method} ${url.pathname}`;
     const token = cookie(request, COOKIE);
-    const session = store.lookup(token);
+    const session = store.lookup(token) ?? (proxySignedIn(request, proxy.secret) ? PROXY_SESSION : null);
 
     if (route === "GET /") {
       // Opening the page renews the cookie, so a device in use stays signed in.
-      return send(response, 200, page, session ? { ...pageHeaders, "Set-Cookie": sessionCookie(token, YEAR_MS / 1000) } : pageHeaders);
+      return send(response, 200, page, session && session !== PROXY_SESSION ? { ...pageHeaders, "Set-Cookie": sessionCookie(token, YEAR_MS / 1000) } : pageHeaders);
     }
     if (route === "GET /icon.svg" && icon) return send(response, 200, icon, { "Content-Type": "image/svg+xml", "Cache-Control": "max-age=86400" });
     if (route === "POST /api/sign-in") {
@@ -1767,6 +1845,14 @@ function main() {
       case "POST /api/restart":
         if (!(await readJson(request))) return sendJson(response, 400, { error: "Expected JSON." });
         return restartT3() ? sendJson(response, 202, { restarting: true }) : sendJson(response, 409, { error: "T3's server process was not found." });
+      case "GET /api/hub":
+        return sendJson(response, 200, hubStatus());
+      case "POST /api/hub/retry":
+      case "POST /api/hub/leave": {
+        if (!(await readJson(request))) return sendJson(response, 400, { error: "Expected JSON." });
+        if (!hubStatus().configured) return sendJson(response, 409, { error: "Hub mode is not configured: T3CODEBOX_HUB_URL is not set." });
+        return startJob(hubJob(jobs, route.endsWith("leave") ? "leave" : "retry"));
+      }
       case "GET /api/jobs":
         return sendJson(response, 200, { jobs: jobs.all() });
       case "POST /api/jobs/stop": {
@@ -1822,9 +1908,9 @@ function main() {
       }
       case "POST /api/skills/remove": {
         const body = await readJson(request);
-        if (!validSkillName(body?.folder) || !skills().installed.some((s) => s.folder === body.folder)) {
-          return sendJson(response, 400, { error: "No such installed skill." });
-        }
+        const installed = skills().installed.filter((s) => s.folder === body?.folder);
+        if (!validSkillName(body?.folder) || !installed.length) return sendJson(response, 400, { error: "No such installed skill." });
+        if (installed.some((s) => s.mounted)) return sendJson(response, 409, { error: `${body.folder} comes from the shared skills folder; change it there.` });
         return startJob(removeSkillJob(jobs, body.folder));
       }
       default:
@@ -1847,7 +1933,7 @@ module.exports = {
   agentOf, countAgents, parseClaudeStatus, parseCodexStatus, parseCursorStatus, parseOpencodeAuth, parseGhStatus,
   parseT3Sessions, parseT3Pairings, parsePairingCreate, parseSkillFrontmatter, parseDu, parseMiseList, pinLabel, userAgentLabel, versionCache,
   outputLines, parseSkillsListing, parseSkillsAdd, parseSkillsLs, parseSkillsUpdate, validSkillSource, validSkillName, validSkillNames,
-  validId, checkGitAuthor, installSkillJob, updateSkillsJob,
+  validId, checkGitAuthor, installSkillJob, updateSkillsJob, skills, hubStatus, hubJob, publicT3Url, proxySecret, proxySignedIn,
   checkPairingRequest, findT3Server, Jobs, qrCode, parseSignIn, withoutDescendants, runLogged, checkSignOut, signOutJob,
   claudeCard, codexCard, cursorCard, grokCard, opencodeCard, githubCard,
   passwordMatches, loadPassword, SessionStore,
