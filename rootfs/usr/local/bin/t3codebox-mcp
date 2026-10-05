@@ -1,0 +1,208 @@
+#!/bin/bash
+# Adds or removes a named MCP server in each agent's user config: Claude Code, Codex, Cursor, Grok Build
+# and OpenCode.
+#   t3codebox-mcp add <name> < spec              adds the server for every agent that has no entry of that name
+#   t3codebox-mcp remove <name> <agent>… < spec  removes those agents' entries of that name, where they are still
+#                                                the spec's (same command or URL); an entry changed since is kept
+# The spec is JSON on stdin, so a key in a header never shows up in a process list:
+#   {"command": "/usr/local/bin/…"}                                    a local server (stdio)
+#   {"url": "https://…", "headers": {"Authorization": "Bearer …"}}    a remote server (streamable HTTP)
+# Never changes an entry it did not write. Prints the agents it changed, one per line (claude, codex, cursor,
+# grok, opencode); what it skipped goes to stderr.
+set -uo pipefail
+
+log() { echo "t3codebox: $*" >&2; }
+
+action=${1:-}
+name=${2:-}
+shift 2 2>/dev/null || true
+if [[ ! "$action" =~ ^(add|remove)$ ]] || [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]]; then
+  echo "usage: t3codebox-mcp add|remove <name> [agents…] < spec.json" >&2
+  exit 2
+fi
+spec=$(head -c 65536)
+
+# A value that goes into a TOML or JSON string as it is: no quotes, backslashes, control characters or spaces
+# in URLs and commands; header names are plain tokens.
+plain='^[^"\\[:cntrl:]]+$'
+command=$(jq -r '.command // empty' <<< "$spec" 2>/dev/null)
+url=$(jq -r '.url // empty' <<< "$spec" 2>/dev/null)
+if [ -n "$command" ] && [ -z "$url" ] && [[ "$command" =~ $plain ]] && [[ "$command" != *" "* ]]; then
+  kind="command"
+  match=$command
+elif [ -n "$url" ] && [ -z "$command" ] && [[ "$url" =~ ^https?://[^[:space:]]+$ ]] && [[ "$url" =~ $plain ]] \
+  && jq -e '(.headers // {}) | type == "object" and all(to_entries[]; (.key | test("^[A-Za-z0-9-]{1,64}$")) and (.value | type == "string" and length > 0 and length <= 1024 and (test("[\"\\\\]") | not) and (explode | all(. >= 32 and . != 127))))' <<< "$spec" >/dev/null 2>&1; then
+  kind="url"
+  match=$url
+else
+  log "t3codebox-mcp: the spec for '$name' is not usable; nothing changed"
+  exit 2
+fi
+
+# One change at a time: the browser and the hub may register at the same start.
+[ -d "$HOME/.t3codebox" ] || mkdir -m 700 "$HOME/.t3codebox"
+exec 9> "$HOME/.t3codebox/mcp.lock"
+flock -w 60 9 || { log "t3codebox-mcp: another registration is still running; nothing changed"; exit 1; }
+
+# A remote server's entry may hold a key: only the user may read a file that has one.
+if [ "$kind" = url ]; then
+  umask 077
+fi
+private() { if [ "$kind" = url ]; then chmod go-rwx "$1"; fi; }
+
+# A JSON config's entry for this server, by agent: what to write, at which path.
+entry_json() {
+  case "$1:$kind" in
+    claude:url) jq -c '{type: "http", url, headers: (.headers // {})}' <<< "$spec" ;;
+    cursor:command) jq -c '{command, args: []}' <<< "$spec" ;;
+    cursor:url) jq -c '{url, headers: (.headers // {})}' <<< "$spec" ;;
+    opencode:command) jq -c '{type: "local", command: [.command], enabled: true}' <<< "$spec" ;;
+    opencode:url) jq -c '{type: "remote", url, headers: (.headers // {}), enabled: true}' <<< "$spec" ;;
+  esac
+}
+
+# The command or URL of a JSON config's entry, whatever form the agent keeps it in.
+json_match='(.command | if type == "array" then .[0] else . end) // .url // empty'
+
+# add_json <file> <section> <agent>: add the entry if <section>.<name> is missing; skip files that are not plain JSON.
+add_json() {
+  local file=$1 section=$2 agent=$3 tmp
+  mkdir -p "$(dirname "$file")"
+  [ -s "$file" ] || echo '{}' > "$file"
+  if ! jq empty "$file" 2>/dev/null; then
+    log "skipped $file: not plain JSON; add the $name MCP server by hand"
+    return 1
+  fi
+  jq -e --arg s "$section" --arg n "$name" '.[$s][$n] != null' "$file" >/dev/null && return 1
+  tmp=$(mktemp)
+  ENTRY=$(entry_json "$agent") jq --arg s "$section" --arg n "$name" '.[$s][$n] = (env.ENTRY | fromjson)' "$file" > "$tmp" \
+    && cat "$tmp" > "$file" && private "$file"
+  rm -f "$tmp"
+}
+
+# remove_json <file> <section>: remove <section>.<name> if it still has this spec's command or URL.
+remove_json() {
+  local file=$1 section=$2 tmp
+  [ -s "$file" ] && jq empty "$file" 2>/dev/null || return 1
+  jq -e --arg s "$section" --arg n "$name" --arg m "$match" ".[\$s][\$n] | ($json_match) == \$m" "$file" >/dev/null 2>&1 || return 1
+  tmp=$(mktemp)
+  jq --arg s "$section" --arg n "$name" 'del(.[$s][$n])' "$file" > "$tmp" && cat "$tmp" > "$file"
+  rm -f "$tmp"
+}
+
+has_toml() { grep -qs "^\[mcp_servers\.$name\]" "$1"; }
+
+# The TOML tables of a remote server, in the form each agent's own `mcp add` writes.
+toml_remote() {
+  printf '\n[mcp_servers.%s]\nurl = "%s"\n' "$name" "$url"
+  if [ "$1" = codex ]; then
+    jq -r '(.headers // {}) | if length > 0 then "http_headers = { " + (to_entries | map("\"\(.key)\" = \"\(.value)\"") | join(", ")) + " }" else empty end' <<< "$spec"
+  else
+    echo "enabled = true"
+    jq -r '(.headers // {}) | if length > 0 then "\n[mcp_servers.'"$name"'.headers]\n" + (to_entries | map("\(.key) = \"\(.value)\"") | join("\n")) else empty end' <<< "$spec"
+  fi
+}
+
+# remove_toml <file>: remove [mcp_servers.<name>] and its subtables if its command or URL is still this spec's.
+remove_toml() {
+  local file=$1 tmp
+  has_toml "$file" || return 1
+  awk -v table="[mcp_servers.$name]" -v key="$kind" -v want="$match" '
+    /^\[/ { inside = ($0 == table) }
+    inside && $0 ~ "^" key "[ \t]*=" { value = $0; sub(/^[^=]*=[ \t]*"/, "", value); sub(/"[ \t]*$/, "", value); found = (value == want) }
+    END { exit !found }' "$file" || return 1
+  tmp=$(mktemp)
+  awk -v table="[mcp_servers.$name]" -v sub_prefix="[mcp_servers.$name." '
+    /^\[/ { skip = ($0 == table || index($0, sub_prefix) == 1) }
+    !skip { lines[++n] = $0 }
+    END {
+      while (n > 0 && lines[n] == "") n--
+      for (i = 1; i <= n; i++) print lines[i]
+    }' "$file" > "$tmp" && cat "$tmp" > "$file"
+  rm -f "$tmp"
+}
+
+# add: every agent; remove: the agents named.
+agents=" $* "
+wanted() { [ "$action" = add ] || [[ "$agents" == *" $1 "* ]]; }
+changed=()
+
+# Claude Code: its own command for a local server, as it always was; the file for a remote one, whose key
+# would otherwise be a command-line argument.
+if command -v claude >/dev/null && wanted claude; then
+  if [ "$action" = add ]; then
+    if ! { [ -s "$HOME/.claude.json" ] && jq -e --arg n "$name" '.mcpServers[$n] != null' "$HOME/.claude.json" >/dev/null 2>&1; }; then
+      if [ "$kind" = command ]; then
+        claude mcp add --scope user "$name" -- "$command" >/dev/null 2>&1 && changed+=(claude)
+      elif add_json "$HOME/.claude.json" mcpServers claude; then
+        changed+=(claude)
+      fi
+    fi
+  elif remove_json "$HOME/.claude.json" mcpServers; then
+    changed+=(claude)
+  fi
+fi
+
+# Codex
+if command -v codex >/dev/null && wanted codex; then
+  config="$HOME/.codex/config.toml"
+  if [ "$action" = add ]; then
+    mkdir -p "$(dirname "$config")"
+    touch "$config"
+    if ! has_toml "$config"; then
+      if [ "$kind" = command ]; then
+        printf '\n[mcp_servers.%s]\ncommand = "%s"\n' "$name" "$command" >> "$config"
+      else
+        toml_remote codex >> "$config"
+        private "$config"
+      fi
+      changed+=(codex)
+    fi
+  elif remove_toml "$config"; then
+    changed+=(codex)
+  fi
+fi
+
+# OpenCode
+if command -v opencode >/dev/null && wanted opencode; then
+  if [ "$action" = add ] && [ -e "$HOME/.config/opencode/opencode.jsonc" ]; then
+    log "skipped OpenCode: opencode.jsonc exists; add the $name MCP server by hand"
+  elif [ "$action" = add ]; then
+    add_json "$HOME/.config/opencode/opencode.json" mcp opencode && changed+=(opencode)
+  else
+    remove_json "$HOME/.config/opencode/opencode.json" mcp && changed+=(opencode)
+  fi
+fi
+
+# Grok Build: like Claude Code, its own command for a local server.
+if command -v grok >/dev/null && wanted grok; then
+  config="$HOME/.grok/config.toml"
+  if [ "$action" = add ]; then
+    if ! has_toml "$config"; then
+      if [ "$kind" = command ]; then
+        grok mcp add --scope user "$name" "$command" >/dev/null 2>&1 && changed+=(grok)
+      else
+        mkdir -p "$(dirname "$config")"
+        toml_remote grok >> "$config"
+        private "$config"
+        changed+=(grok)
+      fi
+    fi
+  elif remove_toml "$config"; then
+    changed+=(grok)
+  fi
+fi
+
+# Cursor
+if command -v cursor-agent >/dev/null && wanted cursor; then
+  if [ "$action" = add ]; then
+    add_json "$HOME/.cursor/mcp.json" mcpServers cursor && changed+=(cursor)
+  else
+    remove_json "$HOME/.cursor/mcp.json" mcpServers && changed+=(cursor)
+  fi
+fi
+
+if [ ${#changed[@]} -gt 0 ]; then
+  printf '%s\n' "${changed[@]}"
+fi
+exit 0
