@@ -250,6 +250,9 @@ hub_mcp_registered() {
     && [ "$(stat -c %a ~/.t3codebox/hub.json)" = 600 ]'
 }
 hub_renews() {
+  sleep 5
+  hub_seen | jq -e '.renewals == 0' >/dev/null || { echo "renewed at once on a renewAfter in the past"; return 1; }
+  in_t3 curl -fsS -b /tmp/dashboard-cookies -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:3772/api/hub/retry >/dev/null || return 1
   for _ in $(seq 45); do hub_seen | jq -e '.renewals >= 1' >/dev/null && break; sleep 2; done
   hub_seen | jq -e '.renewals >= 1 and .checks[-1].authenticated' >/dev/null || return 1
   for _ in $(seq 10); do [ "$(hub_sessions)" = 1 ] && return 0; sleep 1; done
@@ -284,7 +287,7 @@ wait_healthy && signin_dashboard
 check "hub mode: the box enrols once T3 answers, with its versions and agents" hub_enrols
 check "hub mode: the hub's token works on T3, for threads only: no pairing links" hub_token_scoped
 check "hub mode: the hub's MCP server for every agent with its key; the user's own Cursor entry unchanged" hub_mcp_registered
-check "hub mode: renewed when the hub asks, the old token revoked, the new one works" hub_renews
+check "hub mode: no renewal for a renewAfter in the past; Renew now renews, the old token revoked, the new one works" hub_renews
 check "shared skills: /skills linked in for the agents, listed read-only on the dashboard" shared_skills_linked
 check "hub mode: no enrolment code, key or token in the box's logs or any process's arguments" no_secrets
 chosen_passwords() {

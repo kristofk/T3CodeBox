@@ -184,7 +184,9 @@ button.danger { color: var(--bad); }
 // Every address here is relative, so the page works under a path prefix that a proxy strips. Opened as
 // /prefix rather than /prefix/, those addresses would miss the prefix: add the slash, and load the icons again.
 if (!location.pathname.endsWith("/")) {
-  history.replaceState(null, "", `${location.pathname}/${location.search}${location.hash}`);
+  const here = new URL(location.href);
+  here.pathname += "/";
+  history.replaceState(null, "", here.href);
   for (const element of document.querySelectorAll("[src='icon.svg']")) element.src = "icon.svg";
   for (const element of document.querySelectorAll("link[href='icon.svg']")) element.href = "icon.svg";
 }
@@ -930,7 +932,7 @@ async function watchJob(job) {
       else if (job.kind === "toolchains") renderToolchainsJob(job);
       else if (job.kind.startsWith("signin:")) renderSignIn(job);
       else if (job.kind.startsWith("signout:")) renderSignOut(job);
-      else if (job.kind === "hub") renderHubJob(job);
+      else if (job.kind.startsWith("hub:")) renderHubJob(job);
       if (job.state !== "running") break;
       await sleep(1000);
       try {
@@ -942,7 +944,7 @@ async function watchJob(job) {
     }
     if (job.kind === "skills" && job.state === "done" && job.result?.action !== "list") loadSkills();
     if (job.kind === "toolchains" && job.state === "done") loadToolchains();
-    if (job.kind === "hub" && job.state === "done") loadHealth();
+    if (job.kind.startsWith("hub:") && job.state === "done") loadHealth();
     if ((job.kind.startsWith("signin:") || job.kind.startsWith("signout:")) && job.state === "done") loadProviders();
   } finally {
     watching.delete(job.id);

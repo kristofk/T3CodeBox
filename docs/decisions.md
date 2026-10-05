@@ -148,7 +148,10 @@ repository keeps the capitals; GitHub URLs ignore case. Our own settings are upp
 35. **The narrowest T3 credential that does the job.** `t3 auth session issue` gives an administrative token, which
     can open terminals and manage T3's own access: pair devices, revoke sessions, mint more tokens. A pairing
     credential exchanged at T3's token endpoint with `scope=orchestration:read orchestration:operate` can create
-    threads, start, stop and read turns, and nothing else. T3 makes it last 30 days; the box renews it a week before.
+    threads and start, stop and read turns. That is still a lot, since turns run agents that run commands, so the
+    docs tell owners to trust a hub like the agents. T3 makes the token last 30 days; the box renews it a week
+    before, at most once an hour whatever a hub asks, and a token revoked by hand stays revoked until its owner
+    renews it.
 36. **The box's secrets stay put.** The code is used once and not kept; the token and key never go on a command
     line, into a log or onto the dashboard; the hub's addresses for renewing and leaving must be on the enrolment
     address's origin, and requests never follow redirects, so a hub can't send the credential elsewhere.

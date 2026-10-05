@@ -111,7 +111,7 @@ The dashboard pairs devices and installs skills, so its password is worth as muc
 
 ## Hubs and shared skills
 
-T3CodeBox runs on its own. When a hub manages it, the box connects itself: set `T3CODEBOX_HUB_URL` and `T3CODEBOX_HUB_CODE` from the hub in `.env`, and once T3 is up the box gives the hub a T3 token that can work threads and nothing more, adds the hub's MCP server for every agent, and keeps the token renewed. Nobody has to run a command inside the container. The dashboard's Hub card shows how it stands; removing the variable (or **Leave**) takes it all back. Without the variable nothing changes.
+T3CodeBox runs on its own. When a hub manages it, the box connects itself: set `T3CODEBOX_HUB_URL` and `T3CODEBOX_HUB_CODE` from the hub in `.env`, and once T3 is up the box gives the hub a T3 token that can work threads (but not open T3's terminal or change who has access), adds the hub's MCP server for every agent, and keeps the token renewed. Starting turns means running agents, so trust a hub like you trust the agents. Nobody has to run a command inside the container. The dashboard's Hub card shows how it stands; removing the variable (or **Leave**) takes it all back. Without the variable nothing changes.
 
 Skills for every agent, with or without a hub: mount a folder of them read-only at `/skills` (the commented line in `compose.yaml`), and T3CodeBox links each one in for all five agents and keeps the links up to date.
 

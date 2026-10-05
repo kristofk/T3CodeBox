@@ -1625,9 +1625,10 @@ function pruneToolchainsJob(jobs) {
 }
 
 // Retry (or renew now) and Leave, for the hub: t3codebox-hub takes the request within 2 s; the job waits until
-// the hub's state changes, a minute and a half at most.
+// the hub's state changes, a minute and a half at most. Separate kinds, so Leave is never held up by a Retry; the
+// later request wins.
 function hubJob(jobs, action, { requestFile = hub.REQUEST_FILE, stateFile = hub.STATE_FILE, timeout = 90_000, env = process.env } = {}) {
-  return jobs.start("hub", action === "leave" ? "Leaving the hub" : "Contacting the hub", async (log, job) => {
+  return jobs.start(`hub:${action}`, action === "leave" ? "Leaving the hub" : "Contacting the hub", async (log, job) => {
     const before = read(stateFile);
     fs.mkdirSync(path.dirname(requestFile), { recursive: true, mode: 0o700 });
     fs.writeFileSync(requestFile, `${action}\n`, { mode: 0o600 });

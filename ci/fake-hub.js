@@ -49,11 +49,11 @@ http.createServer(async (request, response) => {
     seen.tokens.push(body.t3code?.token);
     seen.enrolments.push({ box: body.box, scopes: body.t3code?.scopes, expiresAt: body.t3code?.expiresAt });
     await check(body.t3code?.token);
-    // A renewal soon after the first enrolment, so the test sees one.
+    // A renewAfter in the past, which the box must not take as a reason to renew at once.
     return send(response, 200, {
       protocol: 1, boxId: `box-${seen.enrolments.length}`, hub: { name: "T3CodeBox test hub" }, key,
       mcp: { name: "hub", url: `${SELF}/mcp` }, renewalUrl: `${SELF}/renew`, leaveUrl: `${SELF}/leave`,
-      renewAfter: seen.enrolments.length === 1 ? new Date(Date.now() + 20_000).toISOString() : null,
+      renewAfter: "2020-01-01T00:00:00Z",
     });
   }
   if (!seen.keys.includes(keyOf(request))) return send(response, 401, { error: "unknown_box" });

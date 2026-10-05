@@ -23,8 +23,8 @@ enrolment.
 Once T3 answers, the box enrols. In the background, so T3 starts and works whether the hub answers or not:
 
 1. It creates a T3 Code access token for the hub. The token can read and work threads (create threads, start and
-   stop turns, read threads and projects), and nothing more: not the terminal, not T3's own access settings, not T3
-   Connect.
+   stop turns, read threads and projects). It can't open T3's terminal, change T3's own access (pair devices, revoke
+   sessions, make more tokens) or use T3 Connect.
 2. It sends the hub the code, the token and a description of the box: its name (the environment name,
    `T3CODEBOX_NAME` or the hostname), the T3CodeBox and T3 Code versions, T3 Code's orchestration protocol version,
    and which agents it has.
@@ -33,6 +33,10 @@ Once T3 answers, the box enrols. In the background, so T3 starts and works wheth
 4. Before the token expires, or when the hub asks, the box sends the hub a new one and revokes the old one. A box
    that was off past the expiry sends a new one when it starts.
 
+**Trust a hub like you trust the agents.** A turn runs an agent, and agents run commands in the box as its user, so a
+hub that can start turns can, through them, do what an agent can. Its MCP server also reaches every agent. The
+token's limits keep the hub out of T3's access settings and terminal; they don't make an untrusted hub safe.
+
 The dashboard's **Hub** card shows where this stands: not connected, enrolling, connected (to which hub, since when,
 when the token is renewed next), or what went wrong.
 
@@ -40,7 +44,9 @@ when the token is renewed next), or what went wrong.
 - **The hub refuses the code:** the card says why, and the box stops trying. Set a new code and restart the box, or
   press **Retry**.
 - **Revoked by hand:** the hub's token shows on the dashboard's T3 access card as a paired device named
-  `Hub <id>`. Revoke it there and the box gives the hub a new one within the hour; to cut the hub off, leave.
+  `Hub <id>`. Revoke it there (or with `t3 auth session revoke`) and the hub is cut off: within the hour the Hub
+  card says so, and the box gives the hub a new token only when you press **Renew now**. **Leave** disconnects it
+  for good.
 
 ### Leaving
 
@@ -89,10 +95,18 @@ A hub may show a box's T3 Code at the root of one address and the dashboard unde
   counts as signed in; the secret is compared in constant time, a request the browser marks cross-site never counts,
   and a shorter secret turns the feature off with a warning in the logs.
 
-  Only use it when the dashboard is reachable through that proxy alone (its port bound to loopback or a private
-  network, as `compose.yaml` does), when the proxy removes that header from what clients send, and when the proxy
-  lets through only people who may use the box: whoever the proxy lets through has the dashboard, which is worth as
-  much as a shell in the container.
+  Only use it when:
+  - the dashboard is reachable through that proxy alone (its port bound to loopback or a private network, as
+    `compose.yaml` does);
+  - the proxy removes that header from what clients send, and adds it only to requests for this box's own host
+    name, routed by host name: a catch-all route would hand the secret to any page that points its own name at
+    the proxy (DNS rebinding);
+  - the proxy lets through only people who may use the box. Whoever it lets through has the dashboard, which is
+    worth as much as a shell in the container.
+
+  Under T3's address, the dashboard and T3 share an origin: script running on that origin, a flaw in T3 included,
+  can use the dashboard as the signed-in user, with or without this setting. A host name of its own for the
+  dashboard keeps them apart.
 - The browser's remote desktop is linuxserver's, and isn't covered here.
 
 ## The enrolment protocol
@@ -199,8 +213,8 @@ the code unused, so the box can enrol with it once it is updated.
 ### Renewal
 
 T3 Code's tokens last 30 days. The box sends a new one a week before the hub's expires, or at `renewAfter` if
-that is sooner, or when its owner presses **Renew now**, or within the hour after the hub's token was revoked on the
-box:
+that is sooner (but never sooner than an hour after the last renewal, whatever `renewAfter` says), or when its owner
+presses **Renew now**:
 
 ```
 POST <renewalUrl>
@@ -212,6 +226,9 @@ Authorization: Bearer <key>
 The hub answers `200` with `{ "protocol": 1 }` and, optionally, a new `renewAfter`. It replaces the stored token
 with the new one at once. The box revokes the old token once the hub has answered, so the hub must not use the old
 one after that answer.
+
+When the hub's token was revoked on the box by hand, the box doesn't renew on its own: its owner meant to cut the
+hub off. The hub sees `401` from T3 Code until the owner presses **Renew now**.
 
 | Status | The box |
 | --- | --- |
