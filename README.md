@@ -262,6 +262,16 @@ How it's built and why: [docs/](docs/README.md).
 
 `make build` produces `t3codebox:test` and `t3codebox-browser:test`; set `T3CODEBOX_IMAGE=t3codebox T3CODEBOX_TAG=test T3CODEBOX_BROWSER_IMAGE=t3codebox-browser` to run them with `compose.yaml`. The scripts in `ci/` need bash, Docker with buildx and compose; `DOCKER="sudo -E docker"` if your Docker needs sudo. CI runs the same `make` targets.
 
+### Updating the base image
+
+The `Dockerfile` pins its base, `debian:trixie-slim`, by digest, so a rebuild never picks up a moved base by surprise. The comment above `FROM` gives the date it was resolved. To move to the current base, resolve the digest of the multi-arch index (not of one architecture):
+
+```sh
+docker buildx imagetools inspect debian:trixie-slim --format '{{.Manifest.Digest}}'
+```
+
+Put it after `debian:trixie-slim@`, update the date in the comment, run `make check build test`, and commit. Bump it on purpose, for example when a scan reports a fixed finding in the base. Because the base is pinned, a rebuild alone does not bring in Debian's security updates; the digest has to move first. (The browser image's `lscr.io/linuxserver/chromium:latest` is a separate base and is not pinned here.)
+
 ## How releases are made
 
 - Every 15 minutes CI checks for a new stable T3 Code release. A new one is built with the newest version of every other component, on native amd64 and arm64 runners, and tested on each: non-root user, health endpoint, T3 version, every provider CLI, pairing link, state across a restart, the dashboard's sign-in, status and settings, toolchains with mise, no sudo and no Docker socket, the browser and an agent-side connection to it, hub mode against a test hub and shared skills. Only then are the tags moved.
