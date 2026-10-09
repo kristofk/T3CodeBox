@@ -270,7 +270,7 @@ The `Dockerfile` pins its base, `debian:trixie-slim`, by digest, so a rebuild ne
 docker buildx imagetools inspect debian:trixie-slim --format '{{.Manifest.Digest}}'
 ```
 
-Put it after `debian:trixie-slim@`, update the date in the comment, run `make check build test`, and commit. Bump it on purpose, for example when a scan reports a fixed finding in the base. Because the base is pinned, a rebuild alone does not bring in Debian's security updates; the digest has to move first. (The browser image's `lscr.io/linuxserver/chromium:latest` is a separate base and is not pinned here.)
+Put it after `debian:trixie-slim@`, update the date in the comment, run `make check build test`, and commit. Bump it on purpose, for example when a scan reports a fixed finding in the base. The build still runs `apt-get upgrade`, so Debian's security fixes reach a rebuild either way; the pin only fixes which base they are applied to. (The browser image's `lscr.io/linuxserver/chromium:latest` is a separate base and is not pinned here.)
 
 ## How releases are made
 
