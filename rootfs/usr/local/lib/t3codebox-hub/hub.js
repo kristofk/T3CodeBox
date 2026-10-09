@@ -483,8 +483,8 @@ class Hub {
     }));
   }
 
-  // Leaving: the entries this box added go, T3's tokens for the hub are revoked, and the hub is told if it gave
-  // an address for that. The caller forgets the state, or keeps it as "left".
+  // Leaving: the entries this box added go, T3's tokens for the hub are revoked, and then the hub is told, once,
+  // if it gave an address for that. The caller forgets the state, or keeps it as "left".
   async leave(state, reason) {
     let origin = "an unknown address";
     try {
@@ -495,15 +495,20 @@ class Hub {
       await this.unregister(state);
       state.mcp = null;
     }
+    // T3 still starting, say: the tokens are revoked on a later step, and the state (the key included) is kept
+    // until then, so the hub hears that the box left only once it can no longer use the box's tokens.
+    for (const which of ["credential", "pending"]) if (await this.revoke(state[which])) state[which] = null;
+    await this.revokeStale(state);
+    state.leaving = Boolean(state.credential || state.pending || (state.stale ?? []).length);
+    if (state.leaving) {
+      this.log("could not revoke the hub's T3 token yet; trying again in 30 s");
+      return false;
+    }
+    // One request, at most 5 seconds, not tried again whatever the answer.
     if (state.leaveUrl && state.key) await postJson(this.fetch, state.leaveUrl, { protocol: PROTOCOL }, { key: state.key, timeout: 5000 });
     state.leaveUrl = null;
     state.key = null;
-    // T3 still starting, say: the tokens are revoked on a later step, and the state is kept until then.
-    for (const which of ["credential", "pending"]) if (await this.revoke(state[which])) state[which] = null;
-    await this.revokeStale(state);
-    state.leaving = Boolean(state.credential || state.pending || state.stale.length);
-    if (state.leaving) this.log("could not revoke the hub's T3 token yet; trying again in 30 s");
-    return !state.leaving;
+    return true;
   }
 
   retry(state, error, retryAfter = null) {
@@ -552,15 +557,16 @@ class Hub {
       await this.revokeStale(state);
       this.save(state);
     }
+    const newCode = Boolean(cfg.code) && hashCode(cfg.code) !== (state?.codeHash ?? null);
     if (state?.leaving || request === "leave") {
       if (state && !(await this.leave(state, "asked on the dashboard"))) {
         this.save({ ...state, status: "left" });
         return 30_000;
       }
       this.save({ url: cfg.url, status: "left", codeHash: state?.codeHash ?? hashCode(cfg.code), error: null, leftAt: state?.leftAt ?? new Date(this.now()).toISOString() });
-      return IDLE;
+      // A leave that a new code started, and that had to wait for T3: the box now enrols with that code.
+      return newCode ? 1000 : IDLE;
     }
-    const newCode = Boolean(cfg.code) && hashCode(cfg.code) !== (state?.codeHash ?? null);
     if (enrolled() && newCode) {
       // A new code enrols the box again, from the start.
       if (!(await this.leave(state, "a new enrolment code is set"))) {
@@ -582,20 +588,22 @@ class Hub {
       this.save(state);
     }
     const due = request === "retry" || this.now() >= renewAt(state) || Boolean(state.nextAttemptAt && this.now() >= Date.parse(state.nextAttemptAt));
-    if (!due) {
-      // Once an hour, and at start: is the hub's token still there?
-      let alive = true;
-      if (this.now() - this.lastCheck >= CHECK_MS) {
-        this.lastCheck = this.now();
-        alive = await this.sessionAlive(state.credential);
+    // Is the hub's token still there? Once an hour, at start, and before every renewal the box makes on its own,
+    // so a token revoked by hand is never replaced behind its owner's back. Not for Renew now, which is the owner
+    // asking, nor for a token past its expiry, whose session T3 may have dropped.
+    const expired = Date.parse(state.credential?.expiresAt) <= this.now();
+    if (request !== "retry" && !expired && (due || this.now() - this.lastCheck >= CHECK_MS)) {
+      this.lastCheck = this.now();
+      if (!(await this.sessionAlive(state.credential))) {
+        // Revoked on this box, on purpose: the hub gets no new token until its owner says so. A token minted for a
+        // renewal that got no answer goes too, since the hub may have it.
+        const error = "The hub's T3 access was revoked on this box. Renew now gives the hub a new token; Leave disconnects it.";
+        this.log(error);
+        this.save(await this.retire({ ...state, status: "error", error, credential: null, pending: null, attempts: 0, nextAttemptAt: null }, state.pending));
+        return IDLE;
       }
-      if (alive) return state.nextAttemptAt ? Math.max(1000, Date.parse(state.nextAttemptAt) - this.now()) : this.untilRenewal(state);
-      // Revoked on this box, on purpose: the hub gets no new token until its owner says so.
-      const error = "The hub's T3 access was revoked on this box. Renew now gives the hub a new token; Leave disconnects it.";
-      this.log(error);
-      this.save({ ...state, status: "error", error, credential: null });
-      return IDLE;
     }
+    if (!due) return state.nextAttemptAt ? Math.max(1000, Date.parse(state.nextAttemptAt) - this.now()) : this.untilRenewal(state);
     const box = await this.describe();
     if (!box) return 5000;
     return this.renew(request === "retry" ? { ...state, attempts: 0 } : state, box);

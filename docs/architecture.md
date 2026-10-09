@@ -177,8 +177,9 @@ Off unless set; [docs/hub.md](hub.md) is the user's guide and the protocol.
   addresses must be on the enrolment address's origin.
 - **Tokens it can take back:** a token whose T3 session isn't listed, or with other scopes than asked for, is
   revoked and never sent. A revocation that fails is tried again at later steps (`stale` in the state file), and
-  leaving keeps the state until every token is revoked. Renewals are at most once an hour; a token revoked by hand
-  makes the card show an error instead of a new token.
+  leaving keeps the state until every token is revoked, and only then tells the hub. Renewals are at most once an
+  hour; a token revoked by hand (looked for every hour and before every renewal the box makes on its own) makes the
+  card show an error instead of a new token.
 - **Shared skills:** `t3codebox-shared-skills` links each folder with a `SKILL.md` in `/skills` into
   `~/.agents/skills`, `~/.claude/skills` and `~/.grok/skills` for the agents that are installed, where nothing of
   that name is. The links it made are listed in `~/.t3codebox/shared-skills`; it removes one only when it is in that

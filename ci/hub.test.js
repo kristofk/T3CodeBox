@@ -1,6 +1,7 @@
 // Unit tests for hub mode (rootfs/usr/local/lib/t3codebox-hub/hub.js): the settings, the checks of a hub's answers,
 // and enrolment, renewal and leaving against a fake hub and a fake T3 Code, both real HTTP servers on loopback.
-// T3's CLI and t3codebox-mcp are stand-ins that record their calls.
+// T3's CLI and t3codebox-mcp are stand-ins that record their calls. `events` records, in order, what the box did to
+// either side, so a test can tell what came first.
 // Run: node --test ci/hub.test.js (make check runs it in node:lts-slim).
 "use strict";
 const assert = require("node:assert/strict");
@@ -38,6 +39,7 @@ function fakeT3() {
   const t3 = { pairings: new Map(), sessions: [], tokens: new Map(), calls: [], n: 0, up: true };
   t3.cli = async (command, args) => {
     t3.calls.push([command, ...args]);
+    events.push(["t3", args[1], args[2], args[3]]);
     const [, kind, verb, id] = args;
     if (command !== "t3") return { code: 1, stdout: "", stderr: "" };
     if (kind === "pairing" && verb === "create") {
@@ -73,17 +75,19 @@ function fakeT3() {
   return t3;
 }
 
-// A hub: enrolment, renewal and leave endpoints whose answers each test sets.
-function fakeHub() {
+// A hub: enrolment, renewal and leave endpoints whose answers each test sets. A leave answer of null is no answer.
+function fakeHub(name = "hub") {
   const hub = { enrolments: [], renewals: [], leaves: [], requests: [] };
   hub.enrol = (request, data) => [200, {
     protocol: 1, boxId: "box-1", hub: { name: "Test hub" }, key: KEY,
     mcp: { name: "hub", url: `${hub.url}/mcp` }, renewalUrl: `${hub.url}/renew`, leaveUrl: `${hub.url}/leave`,
   }];
   hub.renew = () => [200, { protocol: 1 }];
+  hub.leave = () => [204];
   hub.handler = async (request, response) => {
     const data = JSON.parse((await body(request)) || "null");
     hub.requests.push({ url: request.url, headers: request.headers, data });
+    events.push([name, request.url]);
     if (request.url === "/enrol") {
       hub.enrolments.push(data);
       const [status, answer, headers] = hub.enrol(request, data);
@@ -91,21 +95,23 @@ function fakeHub() {
     }
     if (request.url === "/renew") {
       hub.renewals.push({ data, authorization: request.headers.authorization });
-      const [status, answer] = hub.renew(request, data);
-      return json(response, status, answer);
+      const [status, answer, headers] = hub.renew(request, data);
+      return json(response, status, answer, headers);
     }
     if (request.url === "/leave") {
       hub.leaves.push(request.headers.authorization);
-      return json(response, 204, {});
+      const answer = hub.leave(request, data);
+      return answer && json(response, answer[0], answer[1]);
     }
     json(response, 404, {});
   };
   return hub;
 }
 
-let dir, t3, t3Server, hub, hubServer, clock, logs, mcpCalls, mcpAdded;
+let dir, t3, t3Server, hub, hubServer, clock, logs, mcpCalls, mcpAdded, events;
 
 beforeEach(async () => {
+  events = [];
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "t3codebox-hub-"));
   t3 = fakeT3();
   ({ server: t3Server, url: t3.url } = await listen((q, r) => t3.handler(q, r)));
@@ -120,6 +126,7 @@ beforeEach(async () => {
 afterEach(() => {
   t3Server.close();
   hubServer.close();
+  hubServer.closeAllConnections();
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -129,6 +136,7 @@ function box(env = {}) {
     cli: (...args) => t3.cli(...args),
     mcp: async (action, name, agents, spec) => {
       mcpCalls.push({ action, name, agents, spec });
+      events.push(["mcp", action, name]);
       return { code: 0, stdout: action === "add" ? mcpAdded.join("\n") : agents.join("\n"), stderr: "" };
     },
     now: () => clock,
@@ -492,13 +500,13 @@ describe("tokens the box cannot take back", () => {
     const off = box({ T3CODEBOX_HUB_URL: "" });
     assert.equal(await off.step(null), 30_000);
     assert.equal(state().leaving, true);
-    assert.equal(hub.leaves.length, 1, "the hub is told once");
+    assert.equal(hub.leaves.length, 0, "the hub is told only once its tokens are revoked");
     assert.equal(mcpCalls.filter((c) => c.action === "remove").length, 1);
     t3.cli = cli;
     assert.equal(await off.step(null), h.DONE);
     assert.equal(t3.sessions.length, 0);
     assert.ok(!fs.existsSync(path.join(dir, "hub.json")));
-    assert.equal(hub.leaves.length, 1);
+    assert.deepEqual(hub.leaves, [`Bearer ${KEY}`], "the hub is told once, with the key");
     assert.equal(mcpCalls.filter((c) => c.action === "remove").length, 1);
   });
 
@@ -580,6 +588,473 @@ describe("leaving", () => {
     assert.equal(hub.leaves.length, 2);
     assert.equal(other.enrolments.length, 1);
     assert.equal(t3.sessions.length, 1);
+  });
+});
+
+// ---- The box's side of docs/hub.md, case by case: renewal, the 401 rule, leaving, enrolment refusals ----
+
+const HOUR = 60 * 60 * 1000;
+const view = (b) => h.publicState(state(), h.config(b.env));
+const leaveRequests = (from = hub) => from.requests.filter((r) => r.url === "/leave");
+// Where in `events` something happened first; -1 when it did not.
+const at = (...event) => events.findIndex((e) => JSON.stringify(e.slice(0, event.length)) === JSON.stringify(event));
+const failRevocations = () => {
+  const cli = t3.cli;
+  t3.cli = async (command, args) => (args[2] === "revoke" ? { code: 1, stdout: "", stderr: "busy" } : cli(command, args));
+  return () => (t3.cli = cli);
+};
+async function otherHub(answer = null) {
+  const other = fakeHub("other");
+  const { server, url } = await listen((q, r) => other.handler(q, r));
+  other.url = url;
+  other.server = server;
+  if (answer) other.enrol = () => [200, answer(url)];
+  return other;
+}
+
+describe("renewal, as docs/hub.md schedules it", () => {
+  test("a week before the hub's token expires, not a minute sooner; the 2xx replaces the token and schedules the next", async () => {
+    const b = box();
+    await b.step(null);
+    const enrolment = hub.enrolments[0];
+    let expiry = Date.parse(state().credential.expiresAt);
+    assert.equal(expiry, clock + 30 * DAY);
+    for (let n = 1; n <= 2; n++) {
+      clock = expiry - 7 * DAY - 60_000;
+      assert.equal(await b.step(null), 60_000);
+      assert.equal(hub.renewals.length, n - 1, "not due yet");
+      clock += 60_000;
+      const before = state().credential.sessionId;
+      const wait = await b.step(null);
+      assert.equal(hub.renewals.length, n);
+      const sent = hub.renewals[n - 1];
+      assert.equal(sent.authorization, `Bearer ${KEY}`);
+      assert.equal(sent.data.protocol, 1);
+      assert.deepEqual(sent.data.box, enrolment.box);
+      assert.equal(sent.data.code, undefined, "the code is never sent again");
+      const now = state();
+      assert.notEqual(now.credential.sessionId, before, "the hub's answer replaces the stored token");
+      assert.equal(sent.data.t3code.token, t3.sessions.find((s) => s.sessionId === now.credential.sessionId).token);
+      assert.deepEqual(sent.data.t3code.scopes, ["orchestration:read", "orchestration:operate"]);
+      assert.equal(sent.data.t3code.expiresAt, now.credential.expiresAt);
+      assert.equal(now.pending, null);
+      assert.equal(now.renewedAt, new Date(clock).toISOString());
+      assert.deepEqual(t3.sessions.map((s) => s.sessionId), [now.credential.sessionId], "the old token is revoked");
+      expiry = Date.parse(now.credential.expiresAt);
+      assert.equal(expiry, clock + 30 * DAY);
+      assert.equal(view(b).renewBy, new Date(expiry - 7 * DAY).toISOString());
+      assert.equal(wait, HOUR, "the box looks again within the hour");
+    }
+    assert.notEqual(hub.renewals[0].data.t3code.token, hub.renewals[1].data.t3code.token);
+    assertNoSecretsLeaked();
+  });
+
+  for (const status of [201, 202, 204]) {
+    test(`a ${status} is a renewal done as well, with or without a body`, async () => {
+      const b = box();
+      await b.step(null);
+      const first = state().credential.sessionId;
+      clock += 24 * DAY;
+      hub.renew = () => [status, status === 204 ? undefined : { protocol: 1 }];
+      await b.step(null);
+      const now = state();
+      assert.equal(now.status, "connected");
+      assert.equal(now.error, null);
+      assert.notEqual(now.credential.sessionId, first);
+      assert.deepEqual(t3.sessions.map((s) => s.sessionId), [now.credential.sessionId]);
+      clock += HOUR;
+      await b.step(null);
+      assert.equal(hub.renewals.length, 1, "and the next one is on the schedule again");
+    });
+  }
+
+  test("renewAfter in the hub's answer: sooner than the schedule, the box renews then; later, the schedule wins", async () => {
+    const b = box();
+    await b.step(null);
+    clock += 24 * DAY;
+    const asked = new Date(clock + 2 * DAY).toISOString();
+    hub.renew = () => [200, { protocol: 1, renewAfter: asked }];
+    await b.step(null);
+    assert.equal(state().renewAfter, asked);
+    assert.equal(view(b).renewBy, asked);
+    clock = Date.parse(asked) - 60_000;
+    assert.equal(await b.step(null), 60_000);
+    assert.equal(hub.renewals.length, 1);
+    clock += 60_000;
+    hub.renew = () => [200, { protocol: 1, renewAfter: new Date(clock + 40 * DAY).toISOString() }];
+    await b.step(null);
+    assert.equal(hub.renewals.length, 2, "renewed when the hub asked, 21 days ahead of the schedule");
+    const expiry = Date.parse(state().credential.expiresAt);
+    assert.equal(h.renewAt(state()), expiry - 7 * DAY);
+    clock = expiry - 7 * DAY - 60_000;
+    await b.step(null);
+    assert.equal(hub.renewals.length, 2);
+    clock += 60_000;
+    hub.renew = () => [200, { protocol: 1 }];
+    await b.step(null);
+    assert.equal(hub.renewals.length, 3);
+    assert.equal(state().renewAfter, null, "an answer without renewAfter clears the last one");
+  });
+
+  test("a renewAfter that is not a time, or in an answer of another protocol version, is not used", async () => {
+    const b = box();
+    await b.step(null);
+    const soon = () => new Date(clock + 2 * DAY).toISOString();
+    for (const answer of [() => ({ protocol: 1, renewAfter: "soon" }), () => ({ protocol: 1, renewAfter: Date.now() }), () => ({ protocol: 2, renewAfter: soon() })]) {
+      clock += 24 * DAY;
+      hub.renew = () => [200, answer()];
+      const n = hub.renewals.length;
+      await b.step(null);
+      assert.equal(hub.renewals.length, n + 1);
+      assert.equal(state().renewAfter, null, JSON.stringify(answer()));
+      assert.equal(h.renewAt(state()), Date.parse(state().credential.expiresAt) - 7 * DAY);
+    }
+  });
+
+  test("never sooner than an hour after the last renewal, whatever renewAfter says; Renew now is the owner's and is not held back", async () => {
+    hub.enrol = () => [200, { protocol: 1, key: KEY, renewalUrl: `${hub.url}/renew`, renewAfter: "2020-01-01T00:00:00Z" }];
+    hub.renew = () => [200, { protocol: 1, renewAfter: "2020-01-01T00:00:00Z" }];
+    const b = box();
+    assert.equal(await b.step(null), HOUR, "not at once after the enrolment");
+    for (let n = 1; n <= 3; n++) {
+      clock += HOUR - 1000;
+      assert.equal(await b.step(null), 1000);
+      assert.equal(hub.renewals.length, n - 1, "a second short of the hour");
+      clock += 1000;
+      assert.equal(await b.step(null), HOUR);
+      assert.equal(hub.renewals.length, n, "on the hour");
+    }
+    await b.step("retry");
+    assert.equal(hub.renewals.length, 4);
+  });
+
+  test("a box that was off past the expiry renews on its own, even when T3 has dropped the expired token's session", async () => {
+    await box().step(null);
+    clock += 45 * DAY;
+    t3.sessions = [];
+    await box().step(null);
+    assert.equal(hub.renewals.length, 1);
+    assert.equal(state().status, "connected");
+  });
+});
+
+describe("the 401 rule", () => {
+  for (const status of [401, 403, 404, 410]) {
+    test(`a ${status} to a renewal: the box stops renewing, says so on its dashboard, and renews again only on Renew now`, async () => {
+      const b = box();
+      await b.step(null);
+      clock += 24 * DAY;
+      hub.renew = () => [status, { error: "unknown_box", message: "This hub does not know this box." }];
+      assert.equal(await b.step(null), h.IDLE);
+      assert.equal(hub.renewals.length, 1);
+      const refused = hub.renewals[0].data.t3code.token;
+      assert.ok(!t3.sessions.some((s) => s.token === refused), "the token the hub refused is revoked");
+      assert.equal(state().status, "error");
+      assert.equal(state().pending, null);
+      assert.equal(view(b).status, "error");
+      assert.equal(view(b).enrolled, true, "the card offers Renew now and Leave");
+      assert.match(view(b).error, /^The hub no longer accepts this box: This hub does not know this box\. /);
+      // Not on the schedule, not past the expiry, not after a restart.
+      for (const days of [1, 7, 30]) {
+        clock += days * DAY;
+        assert.equal(await b.step(null), h.IDLE);
+        assert.equal(await box().step(null), h.IDLE);
+      }
+      assert.equal(hub.renewals.length, 1);
+      hub.renew = () => [200, { protocol: 1 }];
+      await box().step("retry");
+      assert.equal(hub.renewals.length, 2);
+      assert.equal(state().status, "connected");
+      assert.equal(state().error, null);
+      assert.deepEqual(t3.sessions.map((s) => s.sessionId), [state().credential.sessionId]);
+      assertNoSecretsLeaked();
+    });
+  }
+
+  for (const [status, headers, wait] of [[400, {}, 15_000], [408, {}, 15_000], [409, {}, 15_000], [422, {}, 15_000], [429, { "Retry-After": "90" }, 90_000], [502, {}, 15_000]]) {
+    test(`a ${status} to a renewal is not the 401 rule: tried again with backoff, with the same new token`, async () => {
+      const b = box();
+      await b.step(null);
+      clock += 24 * DAY;
+      hub.renew = () => [status, { error: "busy" }, headers];
+      assert.equal(await b.step(null), wait);
+      assert.equal(state().status, "connected");
+      assert.match(state().error, new RegExp(`HTTP ${status}`));
+      clock += wait;
+      assert.equal(await b.step(null), status === 429 ? 90_000 : 30_000);
+      assert.equal(hub.renewals.length, 2);
+      assert.equal(new Set(hub.renewals.map((r) => r.data.t3code.token)).size, 1);
+      hub.renew = () => [200, { protocol: 1 }];
+      clock += HOUR;
+      await b.step(null);
+      assert.equal(hub.renewals.length, 3);
+      assert.equal(state().error, null);
+      assert.deepEqual(t3.sessions.map((s) => s.sessionId), [state().credential.sessionId]);
+    });
+  }
+
+  test("no answer to a renewal is not the 401 rule either", async () => {
+    const b = box();
+    await b.step(null);
+    clock += 24 * DAY;
+    hubServer.close();
+    hubServer.closeAllConnections();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(await b.step(null), 15_000);
+    assert.equal(state().status, "connected");
+    assert.match(state().error, /^Renewal: the hub did not answer/);
+  });
+
+  test("a token revoked by hand shortly before a renewal the hub asked for is not replaced", async () => {
+    hub.enrol = () => [200, { protocol: 1, key: KEY, renewalUrl: `${hub.url}/renew`, renewAfter: new Date(clock + 90 * 60 * 1000).toISOString() }];
+    const b = box();
+    await b.step(null);
+    clock += HOUR;
+    assert.equal(await b.step(null), 30 * 60 * 1000, "the hourly look: the token is there");
+    t3.sessions = [];
+    clock += 30 * 60 * 1000;
+    assert.equal(await b.step(null), h.IDLE);
+    assert.equal(hub.renewals.length, 0);
+    assert.equal(state().status, "error");
+    assert.match(view(b).error, /revoked on this box\. Renew now gives the hub a new token/);
+    assert.equal(await box().step(null), h.IDLE, "nor after a restart");
+    await b.step("retry");
+    assert.equal(hub.renewals.length, 1);
+    assert.equal(state().status, "connected");
+  });
+
+  test("a token revoked by hand while the hub is down is not replaced at the next attempt", async () => {
+    const b = box();
+    await b.step(null);
+    clock += 24 * DAY;
+    hub.renew = () => [503, {}];
+    assert.equal(await b.step(null), 15_000);
+    const current = state().credential.sessionId;
+    t3.sessions = t3.sessions.filter((s) => s.sessionId !== current);
+    clock += 15_000;
+    assert.equal(await b.step(null), h.IDLE);
+    assert.equal(hub.renewals.length, 1);
+    assert.equal(state().status, "error");
+    assert.equal(state().nextAttemptAt, null);
+    // The token sent in the renewal that got no answer may have reached the hub: it goes too.
+    assert.equal(state().pending, null);
+    assert.equal(t3.sessions.length, 0);
+    await b.step("retry");
+    assert.equal(hub.renewals.length, 2);
+    assert.notEqual(hub.renewals[1].data.t3code.token, hub.renewals[0].data.t3code.token, "Renew now sends a new token");
+  });
+
+  test("Renew now is the owner asking: it renews even a token revoked by hand that the box has not noticed yet", async () => {
+    const b = box();
+    await b.step(null);
+    clock += HOUR;
+    await b.step(null);
+    t3.sessions = [];
+    await b.step("retry");
+    assert.equal(hub.renewals.length, 1);
+    assert.equal(state().status, "connected");
+  });
+});
+
+describe("leaving, as docs/hub.md has it", () => {
+  test("a new address: the old hub's entries go and its tokens are revoked, then it is told with its key, then the new hub enrols", async () => {
+    await box().step(null);
+    const old = state().credential.sessionId;
+    const other = await otherHub((url) => ({ protocol: 1, key: "other-key-0123456789abcdef", renewalUrl: `${url}/renew`, mcp: { name: "other", url: `${url}/mcp` } }));
+    events = [];
+    await box({ T3CODEBOX_HUB_URL: `${other.url}/enrol` }).step(null);
+    other.server.close();
+    const order = [at("mcp", "remove", "hub"), at("t3", "session", "revoke", old), at("hub", "/leave"), at("t3", "pairing", "create"), at("other", "/enrol"), at("mcp", "add", "other")];
+    assert.ok(order.every((i) => i >= 0), JSON.stringify(events));
+    assert.deepEqual([...order].sort((a, b) => a - b), order, JSON.stringify(events));
+    assert.equal(leaveRequests().length, 1);
+    assert.equal(leaveRequests()[0].headers.authorization, `Bearer ${KEY}`);
+    assert.deepEqual(leaveRequests()[0].data, { protocol: 1 });
+    assert.equal(other.enrolments[0].code, CODE);
+    assert.equal(state().status, "connected");
+    assert.equal(state().key, "other-key-0123456789abcdef");
+    assert.deepEqual(t3.sessions.map((s) => s.sessionId), [state().credential.sessionId]);
+  });
+
+  test("an old hub that cannot be reached: the box leaves it anyway and enrols with the new one", async () => {
+    await box().step(null);
+    hubServer.close();
+    hubServer.closeAllConnections();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const other = await otherHub();
+    await box({ T3CODEBOX_HUB_URL: `${other.url}/enrol` }).step(null);
+    other.server.close();
+    assert.equal(other.enrolments.length, 1);
+    assert.equal(state().status, "connected");
+    assert.equal(mcpCalls.filter((c) => c.action === "remove").length, 1);
+    assert.deepEqual(t3.sessions.map((s) => s.sessionId), [state().credential.sessionId]);
+  });
+
+  test("hub mode off while the hub cannot be reached: the box leaves, revokes and forgets all the same", async () => {
+    await box().step(null);
+    hubServer.close();
+    hubServer.closeAllConnections();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(await box({ T3CODEBOX_HUB_URL: "" }).step(null), h.DONE);
+    assert.equal(t3.sessions.length, 0);
+    assert.ok(!fs.existsSync(path.join(dir, "hub.json")));
+  });
+
+  test("a hub that refuses the leave gets one request and no more", async () => {
+    await box().step(null);
+    hub.leave = () => [500, { error: "busy" }];
+    assert.equal(await box({ T3CODEBOX_HUB_URL: "" }).step(null), h.DONE);
+    assert.equal(await box({ T3CODEBOX_HUB_URL: "" }).step(null), h.DONE);
+    assert.equal(leaveRequests().length, 1);
+    assert.equal(t3.sessions.length, 0);
+    assert.ok(!fs.existsSync(path.join(dir, "hub.json")));
+  });
+
+  test("a hub that never answers the leave holds the box up for 5 seconds at most", async () => {
+    await box().step(null);
+    hub.leave = () => null;
+    const started = Date.now();
+    assert.equal(await box({ T3CODEBOX_HUB_URL: "" }).step(null), h.DONE);
+    const took = Date.now() - started;
+    assert.ok(took >= 4500 && took < 10_000, String(took));
+    assert.equal(leaveRequests().length, 1);
+    assert.ok(!fs.existsSync(path.join(dir, "hub.json")));
+  });
+
+  test("a token from an earlier renewal that could not be revoked then: the hub is told only once it is", async () => {
+    const b = box();
+    await b.step(null);
+    const old = state().credential.sessionId;
+    const restore = failRevocations();
+    clock += 24 * DAY;
+    await b.step(null);
+    assert.deepEqual(state().stale, [old]);
+    restore();
+    const cli = t3.cli;
+    t3.cli = async (command, args) => (args[2] === "revoke" && args[3] === old ? { code: 1, stdout: "", stderr: "busy" } : cli(command, args));
+    const off = box({ T3CODEBOX_HUB_URL: "" });
+    assert.equal(await off.step(null), 30_000);
+    assert.equal(leaveRequests().length, 0);
+    t3.cli = cli;
+    assert.equal(await off.step(null), h.DONE);
+    assert.equal(leaveRequests().length, 1);
+    assert.equal(t3.sessions.length, 0);
+  });
+
+  test("a hub that gave no leave address is not contacted", async () => {
+    hub.enrol = () => [200, { protocol: 1, key: KEY, renewalUrl: `${hub.url}/renew` }];
+    await box().step(null);
+    await box().step("leave");
+    assert.equal(state().status, "left");
+    assert.deepEqual(hub.requests.map((r) => r.url), ["/enrol"]);
+    assert.equal(t3.sessions.length, 0);
+  });
+
+  test("Leave on the dashboard: tokens revoked, then the hub told with the key; Retry enrols again with the same code", async () => {
+    const b = box();
+    await b.step(null);
+    const old = state().credential.sessionId;
+    events = [];
+    assert.equal(await b.step("leave"), h.IDLE);
+    assert.ok(at("t3", "session", "revoke", old) >= 0 && at("t3", "session", "revoke", old) < at("hub", "/leave"), JSON.stringify(events));
+    assert.equal(leaveRequests()[0].headers.authorization, `Bearer ${KEY}`);
+    assert.deepEqual(leaveRequests()[0].data, { protocol: 1 });
+    assert.ok(!state().key, "the key is forgotten");
+    assert.equal(view(b).enrolled, false);
+    await b.step("retry");
+    assert.equal(hub.enrolments.length, 2);
+    assert.equal(hub.enrolments[1].code, CODE);
+    assert.equal(state().status, "connected");
+  });
+
+  test("a new code whose leave had to wait for T3: the box enrols with it once the old tokens are revoked", async () => {
+    await box().step(null);
+    const restore = failRevocations();
+    const b = box({ T3CODEBOX_HUB_CODE: "another-code" });
+    assert.equal(await b.step(null), 30_000);
+    assert.equal(leaveRequests().length, 0);
+    restore();
+    assert.ok(Number.isFinite(await b.step(null)), "not idle until someone presses Retry");
+    assert.equal(leaveRequests().length, 1);
+    await b.step(null);
+    assert.equal(hub.enrolments.length, 2);
+    assert.equal(hub.enrolments[1].code, "another-code");
+    assert.equal(state().status, "connected");
+    assert.equal(t3.sessions.length, 1);
+  });
+});
+
+describe("enrolment refusals", () => {
+  const refusals = [
+    [401, { error: "invalid_code", message: "This enrolment code is unknown." }, "This enrolment code is unknown"],
+    [403, { error: "invalid_code", message: "This enrolment code was used already." }, "This enrolment code was used already"],
+    [403, { error: "invalid_code", message: "This enrolment code has expired." }, "This enrolment code has expired"],
+    [401, { error: "invalid_code" }, "invalid_code"],
+    [403, undefined, "HTTP 403"],
+    [400, { error: "unsupported_protocol", message: "This hub speaks protocol 2." }, "This hub speaks protocol 2"],
+    [409, { error: "unsupported_box" }, "unsupported_box"],
+    [404, {}, "HTTP 404"],
+    [418, { error: "refused" }, "refused"],
+  ];
+  for (const [status, answer, shown] of refusals) {
+    test(`${status} ${answer?.message ?? answer?.error ?? "without a body"}: stops, revokes the token, says why, and is not tried again`, async () => {
+      hub.enrol = () => [status, answer];
+      const b = box();
+      assert.equal(await b.step(null), h.IDLE);
+      const sent = hub.enrolments[0].t3code.token;
+      assert.ok(!t3.sessions.some((s) => s.token === sent));
+      assert.equal(t3.sessions.length, 0);
+      const s = state();
+      assert.equal(s.status, "rejected");
+      assert.equal(s.error, `The hub refused the enrolment: ${shown}. Set a new code, or press Retry.`);
+      assert.ok(!s.key && !s.pending && !s.credential);
+      assert.equal(mcpCalls.length, 0);
+      assert.equal(view(b).status, "rejected");
+      assert.equal(view(b).enrolled, false);
+      assert.equal(view(b).error, s.error);
+      assert.equal(await b.step(null), h.IDLE);
+      assert.equal(await box().step(null), h.IDLE, "nor after a restart");
+      clock += 30 * DAY;
+      assert.equal(await b.step(null), h.IDLE);
+      assert.equal(hub.enrolments.length, 1);
+      assertNoSecretsLeaked();
+    });
+  }
+
+  test("a 408 is a hub that did not answer in time: tried again", async () => {
+    hub.enrol = () => [408, {}];
+    assert.equal(await box().step(null), 15_000);
+    assert.equal(state().status, "enrolling");
+    assert.match(state().error, /HTTP 408/);
+  });
+
+  test("a 422 for an unsupported box: not enrolled, nothing registered; the updated box sends the same code on Retry", async () => {
+    hub.enrol = () => [422, { error: "unsupported_box", message: "This hub needs T3 Code 0.0.50 or later." }];
+    const b = box();
+    assert.equal(await b.step(null), h.IDLE);
+    assert.equal(state().status, "rejected");
+    assert.equal(view(b).enrolled, false);
+    assert.ok(!state().key);
+    assert.equal(t3.sessions.length, 0);
+    assert.equal(mcpCalls.length, 0);
+    assert.equal(await box({ T3CODEBOX_VERSION: "0.0.50-1" }).step(null), h.IDLE, "an update alone does not try again: Retry does");
+    hub.enrol = () => [200, { protocol: 1, key: KEY, renewalUrl: `${hub.url}/renew` }];
+    await box({ T3CODEBOX_VERSION: "0.0.50-1" }).step("retry");
+    assert.equal(hub.enrolments.length, 2);
+    assert.equal(hub.enrolments[1].code, CODE, "the code the hub left unused");
+    assert.equal(hub.enrolments[1].box.t3codebox, "0.0.50-1");
+    assert.notEqual(hub.enrolments[1].t3code.token, hub.enrolments[0].t3code.token, "a new token: the refused one was revoked");
+    assert.equal(state().status, "connected");
+  });
+
+  test("the hub's message is shown as one line of at most 200 characters", async () => {
+    hub.enrol = () => [403, { error: "invalid_code", message: `${"x".repeat(150)}\n<b>${"y".repeat(150)}` }];
+    await box().step(null);
+    const { error } = state();
+    const shown = error.slice("The hub refused the enrolment: ".length, error.indexOf(". Set a new code"));
+    assert.equal(shown.length, 200);
+    assert.ok(shown.startsWith(`${"x".repeat(150)} <b>`));
+    assert.ok(!error.includes("\n"));
   });
 });
 

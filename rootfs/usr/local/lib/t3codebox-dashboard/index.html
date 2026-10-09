@@ -422,7 +422,8 @@ function renderHub(hub) {
   const button = (label, action, question, danger) => h("button", { type: "button", class: danger ? "danger" : null, onclick: () => {
     if (!question || confirm(question)) startHubJob(action);
   } }, label);
-  const retry = button(hub.status === "connected" ? "Renew now" : "Retry", "retry", null, false);
+  // Enrolled (connected, or stopped by a revocation or the hub's 401): Retry renews the token, as docs/hub.md says.
+  const retry = button(hub.enrolled ? "Renew now" : "Retry", "retry", null, false);
   const leave = button("Leave", "leave", `Leave ${where}? The hub's MCP server is removed from the agents and its access to T3 is revoked. The box enrols again only with a new code or Retry.`, true);
   const red = [];
   let rows;
