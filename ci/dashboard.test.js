@@ -634,8 +634,8 @@ describe("settings: git author, pairing, restart", () => {
   });
 
   test("pairing requests", () => {
-    assert.deepEqual(d.checkPairingRequest({ baseUrl: "https://thunderbox.example.ts.net:4773/", ttl: "1h", label: " iPhone " }),
-      { baseUrl: "https://thunderbox.example.ts.net:4773", ttl: "1h", label: "iPhone" });
+    assert.deepEqual(d.checkPairingRequest({ baseUrl: "https://build-box-01.example.test:4773/", ttl: "1h", label: " iPhone " }),
+      { baseUrl: "https://build-box-01.example.test:4773", ttl: "1h", label: "iPhone" });
     assert.deepEqual(d.checkPairingRequest({ baseUrl: "https://example.com/t3/", ttl: "30d" }),
       { baseUrl: "https://example.com/t3", ttl: "30d", label: "Dashboard" });
     for (const bad of [
@@ -704,16 +704,16 @@ describe("QR codes", () => {
   });
 
   test("a pairing link under each of the eight masks", () => {
-    const link = "https://thunderbox.example.ts.net:4773/pair#token=ABCDEFGHJKLM";
+    const link = "https://build-box-01.example.test:4773/pair#token=ABCDEFGHJKLM";
     const expected = [
-      "d9dae1362779ee3cb6859d5a95334dda8f5f5d09bc2945d8b2fb47b416fadeab",
-      "4443a2a261031909844db67f60c58baacbe0c0cb8d2a67665a7ecd49491a6c68",
-      "07957d3dd156461d3d7d0b1f6c660906474101420eab89bb90ebcec272be7cd2",
-      "c6d9ab632b111bc9e85444dff8211930f497d496c1b762f02fcaa04e383371c8",
-      "602a437021d7d07945f8882b0b964427730e5064314f35005c74e49bb6977a94",
-      "1fbb134c8e2006914b462909b7ca6544b3d005d1aaca4f690e645c5f4596e273",
-      "09cb50b2b96f1a6d00c3734f46c30eedb52f841f5e6ba7df64f507d9bc865813",
-      "5239e259e13b74b3ad94cdbb55c7e08dc6f216dfb6f92d554ad361d7a3a1df58",
+      "55fee6088dd6f8d5a47784a97f05c65c64dbc1101406288f9d2ecf4a557505a7",
+      "9cbfc8d49e3ed4204964406a0c7045debb1d9150f8522f7452ecb0701b2cd7b7",
+      "37a61fe44717068123ce8630e6110075ece6386e0e2d73d0aa87ad411a0f7a1a",
+      "ede5dc7e260b914cc3bf4943652539446ff96d537f467012fab62ddb588a64df",
+      "91db693729be1d361c05802f29c2343b3925c3d9bfeecbc9172bf9a3571f5f50",
+      "892c0196a08129726970c18e4648f130474d900e270e1deaccabb86a65594152",
+      "050ab6602d0b77b1bb22ce6337971417d0c29876a0f6f6a13599861d935b4090",
+      "58bed4988127b91776222b718b2b7767ad1b2361d8d0f126d36a228f0e671309",
     ];
     expected.forEach((sha, mask) => assert.equal(fingerprint(d.qrCode(link, mask)), sha, `mask ${mask}`));
     assert.equal(d.qrCode(link).length, 33); // version 4
