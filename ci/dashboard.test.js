@@ -1037,3 +1037,118 @@ describe("SessionStore", () => {
     assert.equal(new d.SessionStore(file, "first", now).lookup(token, now), null);
   });
 });
+
+describe("hub mode, shared skills and a trusted proxy (made up)", () => {
+  test("the Hub card's states come from hub mode's state file, without its secrets", () => {
+    const dir = tempDir();
+    const file = path.join(dir, "hub.json");
+    assert.deepEqual(d.hubStatus({}, file), { configured: false, status: "off" });
+    const env = { T3CODEBOX_HUB_URL: "https://hub.example.test/enrol" };
+    assert.equal(d.hubStatus(env, file).status, "enrolling");
+    fs.writeFileSync(file, JSON.stringify({ url: env.T3CODEBOX_HUB_URL, status: "rejected", error: "The hub refused the enrolment: used code." }));
+    assert.deepEqual([d.hubStatus(env, file).status, d.hubStatus(env, file).error], ["rejected", "The hub refused the enrolment: used code."]);
+    fs.writeFileSync(file, JSON.stringify({
+      url: env.T3CODEBOX_HUB_URL, status: "connected", hubName: "Hub", key: "secret-key-0123456789", mcp: { name: "hub", url: "https://hub.example.test/mcp", agents: ["claude"] },
+      credential: { sessionId: "s1", expiresAt: "2026-11-04T12:00:00.000Z" }, pending: { token: "secret-token" }, enrolledAt: "2026-10-05T12:00:00.000Z",
+    }));
+    const connected = d.hubStatus(env, file);
+    assert.equal(connected.status, "connected");
+    assert.equal(connected.renewBy, "2026-10-28T12:00:00.000Z");
+    assert.equal(connected.origin, "https://hub.example.test");
+    assert.ok(!/secret/.test(JSON.stringify(connected)));
+    assert.equal(d.hubStatus({}, file).status, "leaving");
+    assert.equal(d.hubStatus({ T3CODEBOX_HUB_URL: "ftp://x" }, file).status, "error");
+  });
+
+  test("Retry and Leave hand hub mode a request and wait until its state changes", async () => {
+    const dir = tempDir();
+    const requestFile = path.join(dir, "hub-request");
+    const stateFile = path.join(dir, "hub.json");
+    const env = { T3CODEBOX_HUB_URL: "https://hub.example.test/enrol" };
+    fs.writeFileSync(stateFile, JSON.stringify({ url: env.T3CODEBOX_HUB_URL, status: "connected", key: "k" }));
+    const jobs = new d.Jobs();
+    const { job } = d.hubJob(jobs, "leave", { requestFile, stateFile, env, timeout: 10_000 });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(fs.readFileSync(requestFile, "utf8"), "leave\n");
+    // What t3codebox-hub does: takes the request, writes the new state.
+    fs.rmSync(requestFile);
+    fs.writeFileSync(stateFile, JSON.stringify({ url: env.T3CODEBOX_HUB_URL, status: "left" }));
+    for (let i = 0; i < 40 && job.state === "running"; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(job.state, "done");
+    assert.equal(job.result.hub.status, "left");
+
+    const stalled = d.hubJob(new d.Jobs(), "retry", { requestFile, stateFile, env, timeout: 1500 }).job;
+    for (let i = 0; i < 40 && stalled.state === "running"; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(stalled.state, "failed");
+    assert.match(stalled.error, /did not take the request/);
+  });
+
+  test("skills linked in from the shared folder are listed once, read-only, from there", () => {
+    const home = tempDir();
+    const shared = tempDir();
+    fs.mkdirSync(path.join(shared, "team-review"));
+    fs.writeFileSync(path.join(shared, "team-review", "SKILL.md"), "---\nname: team-review\ndescription: Reviews.\n---\n");
+    for (const dir of [".agents/skills", ".claude/skills", ".grok/skills"]) {
+      fs.mkdirSync(path.join(home, dir), { recursive: true });
+      fs.symlinkSync(path.join(shared, "team-review"), path.join(home, dir, "team-review"));
+    }
+    fs.mkdirSync(path.join(home, ".agents/skills/own"));
+    fs.writeFileSync(path.join(home, ".agents/skills/own/SKILL.md"), "---\nname: own\n---\n");
+    const list = d.skills(home, shared, {});
+    const team = list.installed.find((s) => s.name === "team-review");
+    assert.equal(team.mounted, true);
+    assert.deepEqual(team.agents.sort(), ["Claude Code", "Grok Build", "Shared"]);
+    assert.equal(list.installed.find((s) => s.name === "own").mounted, false);
+    assert.equal(list.sharedFolder, shared);
+    assert.equal(list.agentsFolderWritable, true);
+    assert.equal(d.skills(home, path.join(shared, "missing"), {}).sharedFolder, null);
+  });
+
+  test("T3CODEBOX_PUBLIC_URL is T3's address for new pairing links when it is a plain address", () => {
+    assert.equal(d.publicT3Url({ T3CODEBOX_PUBLIC_URL: "https://box.example.test/" }), "https://box.example.test");
+    assert.equal(d.publicT3Url({}), null);
+    assert.equal(d.publicT3Url({ T3CODEBOX_PUBLIC_URL: "javascript:alert(1)" }), null);
+    assert.equal(d.publicT3Url({ T3CODEBOX_PUBLIC_URL: "https://user:pw@box.example.test" }), null);
+  });
+
+  test("a trusted proxy's secret signs a request in: only a long one, compared exactly, never cross-site", () => {
+    const secret = "proxy-secret-0123456789abcdefghijklmnop";
+    assert.deepEqual(d.proxySecret({}), { secret: null });
+    assert.match(d.proxySecret({ DASHBOARD_PROXY_SECRET: "short" }).error, /shorter than 32/);
+    assert.equal(d.proxySecret({ DASHBOARD_PROXY_SECRET: "short" }).secret, null);
+    assert.equal(d.proxySecret({ DASHBOARD_PROXY_SECRET: secret }).secret, secret);
+    const request = (headers) => ({ headers });
+    assert.equal(d.proxySignedIn(request({ "x-t3codebox-proxy-secret": secret }), secret), true);
+    assert.equal(d.proxySignedIn(request({ "x-t3codebox-proxy-secret": secret, "sec-fetch-site": "same-origin" }), secret), true);
+    assert.equal(d.proxySignedIn(request({ "x-t3codebox-proxy-secret": secret, "sec-fetch-site": "cross-site" }), secret), false);
+    assert.equal(d.proxySignedIn(request({ "x-t3codebox-proxy-secret": `${secret}x` }), secret), false);
+    assert.equal(d.proxySignedIn(request({ "x-t3codebox-proxy-secret": secret.slice(0, -1) }), secret), false);
+    assert.equal(d.proxySignedIn(request({}), secret), false);
+    assert.equal(d.proxySignedIn(request({ "x-t3codebox-proxy-secret": "" }), null), false);
+    assert.equal(d.proxySignedIn(request({ "x-t3codebox-proxy-secret": secret }), null), false);
+  });
+});
+
+describe("the page under a path prefix", () => {
+  const page = fs.readFileSync(path.join(__dirname, "../rootfs/usr/local/lib/t3codebox-dashboard/index.html"), "utf8");
+
+  test("every address the page uses is relative: no leading slash, no absolute URL of its own", () => {
+    const script = page.match(/<script>([\s\S]*?)<\/script>/)[1];
+    assert.deepEqual([...page.matchAll(/(?:src|href|action)="(\/[^"]*)"/g)].map((m) => m[1]), []);
+    assert.deepEqual([...script.matchAll(/(?:api|fetch)\(\s*[`"'](\/[^`"']*)/g)].map((m) => m[1]), []);
+    assert.ok([...script.matchAll(/api\(\s*[`"']([^`"']+)/g)].every((m) => m[1].startsWith("api/")));
+    assert.match(script, /fetch\("api\/sign-in"/);
+    assert.doesNotMatch(script, /new (WebSocket|EventSource)/);
+  });
+
+  test("opened without the trailing slash, the page adds it before its first request", () => {
+    const script = page.match(/<script>([\s\S]*?)<\/script>/)[1];
+    assert.ok(script.indexOf("history.replaceState") < script.indexOf("loadHealth();\n"));
+  });
+
+  test("the server's answers name no absolute path: the cookie is for the whole address, nothing redirects", () => {
+    const server = fs.readFileSync(path.join(__dirname, "../rootfs/usr/local/lib/t3codebox-dashboard/server.js"), "utf8");
+    assert.doesNotMatch(server, /Location:|"Location"|\b30[1278]\b/);
+    assert.match(server, /Path=\/;/);
+  });
+});

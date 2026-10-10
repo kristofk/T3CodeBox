@@ -134,6 +134,34 @@ repository keeps the capitals; GitHub URLs ignore case. Our own settings are upp
     in the user's own instruction files in home. Cursor and Grok Build have no such file, so a missing
     command in bash says how to install it, for every agent.
 
+## Hubs (docs/hub.md)
+
+32. **Hub mode is opt-in.** T3CodeBox is a stand-alone product first. Without `T3CODEBOX_HUB_URL` nothing of it
+    starts and nothing changes; the one piece that runs regardless, shared skills, does nothing without `/skills`.
+33. **The box pushes; a hub never reaches in.** A hub that installs boxes manages containers, and running commands
+    inside them would need a Docker socket or a shell. Instead the box makes the hub's credential itself, decides
+    what it may do, delivers it, renews it and revokes it. The hub needs no access to the box beyond T3's own API,
+    and removing one setting undoes everything.
+34. **A generic, versioned protocol,** written down in `docs/hub.md`, rather than support for one hub. Any hub can
+    implement it, the box's side stays small, and every message carries a version so either side can change
+    without guessing.
+35. **The narrowest T3 credential that does the job.** `t3 auth session issue` gives an administrative token, which
+    can open terminals and manage T3's own access: pair devices, revoke sessions, mint more tokens. A pairing
+    credential exchanged at T3's token endpoint with `scope=orchestration:read orchestration:operate` can create
+    threads and start, stop and read turns. That is still a lot, since turns run agents that run commands, so the
+    docs tell owners to trust a hub like the agents. T3 makes the token last 30 days; the box renews it a week
+    before, at most once an hour whatever a hub asks, and a token revoked by hand stays revoked until its owner
+    renews it.
+36. **The box's secrets stay put.** The code is used once and not kept; the token and key never go on a command
+    line, into a log or onto the dashboard; the hub's addresses for renewing and leaving must be on the enrolment
+    address's origin, and requests never follow redirects, so a hub can't send the credential elsewhere.
+37. **Shared skills at `/skills`, linked in,** rather than a read-only mount over `~/.agents/skills`, so the
+    dashboard's skill installs keep working next to them, and Claude Code and Grok Build, which read only their own
+    folders, get them too. Links are only made where nothing of the name exists, and only links T3CodeBox made are
+    removed.
+38. **Sign-in through a proxy only with a shared secret,** never by trusting a header the proxy sets about the user:
+    without the secret, anything that can reach the dashboard's port could claim to be the proxy.
+
 ## Prior art
 
 Community images for T3 Code, none official:

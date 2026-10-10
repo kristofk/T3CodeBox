@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 # T3CodeBox: the T3 Code server (`t3 serve`) with the coding-agent CLIs it drives.
-FROM debian:trixie-slim
+# Base image pinned by digest (the multi-arch index, so amd64 and arm64 both resolve), resolved 2026-10-09.
+# To bump it, see "Updating the base image" in the README.
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 
 # T3 Code release to install, e.g. 0.0.42. `make build` fills it with the latest stable release.
 ARG T3_VERSION

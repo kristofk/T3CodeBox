@@ -1,0 +1,94 @@
+#!/bin/bash
+# Makes the skills in a shared folder (/skills, usually mounted read-only) available to every agent, by linking
+# each one into the folders the agents read: ~/.agents/skills (Codex, Cursor, OpenCode), ~/.claude/skills and
+# ~/.grok/skills. The same layout the `skills` CLI makes, with the shared folder in place of its copies.
+#   t3codebox-shared-skills           one pass: links what is new, removes the links of skills that are gone
+#   t3codebox-shared-skills --watch   a pass now and every minute, while the shared folder is there
+# Links only where nothing of that name exists, and removes only links it made (listed in
+# ~/.t3codebox/shared-skills) that still point where it made them. Never writes into the shared folder.
+set -uo pipefail
+
+log() { echo "t3codebox: $*"; }
+
+SOURCE=${T3CODEBOX_SKILLS_DIR:-/skills}
+STATE="$HOME/.t3codebox/shared-skills"
+
+# The folders to link into, for the agents that are installed.
+targets() {
+  if command -v codex >/dev/null || command -v cursor-agent >/dev/null || command -v opencode >/dev/null; then
+    echo "$HOME/.agents/skills"
+  fi
+  if command -v claude >/dev/null; then echo "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"; fi
+  if command -v grok >/dev/null; then echo "${GROK_HOME:-$HOME/.grok}/skills"; fi
+}
+
+pass() {
+  local quiet=$1 skill name dir link dirs made=() kept=() added=() removed=()
+  local -A wanted=()
+  dirs=$(targets)
+  # A skill is a folder with a SKILL.md, named the way skill folders are.
+  if [ -d "$SOURCE" ]; then
+    for skill in "$SOURCE"/*/; do
+      name=$(basename "$skill")
+      [ -f "$skill/SKILL.md" ] || continue
+      if [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]]; then
+        [ "$quiet" = 1 ] || log "shared skill folder '$name' skipped: use letters, digits, '.', '_' and '-'"
+        continue
+      fi
+      wanted[$name]=1
+    done
+  fi
+  [ -s "$STATE" ] && mapfile -t made < "$STATE"
+
+  # Links made before: kept while the skill is there, removed once it is gone. A link someone else replaced
+  # or changed is no longer ours, and is left alone.
+  for link in "${made[@]}"; do
+    name=$(basename "$link")
+    grep -qxF -- "$(dirname "$link")" <<< "$dirs" || continue
+    [ -L "$link" ] && [ "$(readlink "$link")" = "$SOURCE/$name" ] || continue
+    if [ -n "${wanted[$name]:-}" ]; then
+      kept+=("$link")
+    else
+      rm -f "$link" && removed+=("$name")
+    fi
+  done
+
+  while read -r dir; do
+    [ -n "$dir" ] || continue
+    for name in "${!wanted[@]}"; do
+      link="$dir/$name"
+      if [ -L "$link" ] && [ "$(readlink "$link")" = "$SOURCE/$name" ]; then
+        continue # ours, kept above; or the same link made by hand, which stays the user's
+      elif [ -e "$link" ] || [ -L "$link" ]; then
+        [ "$quiet" = 1 ] || log "shared skill $name not linked into $dir: something of that name is there already"
+      elif mkdir -p "$dir" && ln -s "$SOURCE/$name" "$link"; then
+        kept+=("$link")
+        added+=("$name")
+      fi
+    done
+  done <<< "$dirs"
+
+  if [ ${#kept[@]} -gt 0 ] || [ -e "$STATE" ]; then
+    [ -d "$(dirname "$STATE")" ] || mkdir -m 700 "$(dirname "$STATE")"
+    if [ ${#kept[@]} -gt 0 ]; then printf '%s\n' "${kept[@]}" | sort -u > "$STATE.tmp"; else : > "$STATE.tmp"; fi
+    mv "$STATE.tmp" "$STATE"
+    [ -s "$STATE" ] || rm -f "$STATE"
+  fi
+  if [ ${#added[@]} -gt 0 ]; then log "shared skills linked for the agents: $(printf '%s\n' "${added[@]}" | sort -u | xargs)"; fi
+  if [ ${#removed[@]} -gt 0 ]; then log "shared skills gone, links removed: $(printf '%s\n' "${removed[@]}" | sort -u | xargs)"; fi
+  return 0
+}
+
+if [ "${1:-}" = --watch ]; then
+  pass 0
+  if [ -d "$SOURCE" ]; then
+    while [ -d "$SOURCE" ]; do
+      sleep "${T3CODEBOX_SKILLS_INTERVAL:-60}"
+      pass 1
+    done
+    # The folder went away: one more pass removes the links.
+    pass 1
+  fi
+else
+  pass 0
+fi

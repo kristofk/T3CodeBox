@@ -8,6 +8,8 @@ How T3CodeBox works and why, for people and agents who change it. Using T3CodeBo
 - [External tools](external-tools.md): what T3 Code, the provider CLIs, `skills`, mise and Chromium actually do,
   checked against running versions. The image's scripts and the dashboard's parsers rely on these facts.
 - [Decisions](decisions.md): what was decided and why, including what was tried and dropped.
+- [Hubs](hub.md): connecting a box to a hub, shared skills, running behind a proxy, and the enrolment protocol for
+  anyone writing a hub.
 
 These pages hold the current state only. When a change makes a page wrong, fix the page in the same pull
 request; git history keeps the old versions. Work still to do is in the

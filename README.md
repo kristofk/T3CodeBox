@@ -18,6 +18,7 @@ Unofficial, unaffiliated, self-proclaimed flagship container for [T3 Code](https
 - [x] A real Chromium the agents drive, and you can watch and take over
 - [x] Go, Rust, Java, any Node or Python: agents install what a repo needs with mise, no root
 - [x] A phone-friendly dashboard for health, sign-ins, devices and skills
+- [x] Stand-alone, or connected to a hub with two settings; skills shared from one folder
 - [x] New T3 Code release? New image, automatically; we check every 15 minutes
 - [x] Tested on amd64 and arm64 before anything ships
 - [x] Daily security scan, with automatic rebuilds for critical fixes
@@ -85,7 +86,7 @@ docker restart t3codebox
 
 ### LAN or reverse proxy
 
-- **Reverse proxy** (Caddy, Traefik, nginx, Nginx Proxy Manager): proxy HTTPS to `127.0.0.1:3773`, `127.0.0.1:3774` and `127.0.0.1:3772` with WebSocket support, and use the proxy's URL as `--base-url`.
+- **Reverse proxy** (Caddy, Traefik, nginx, Nginx Proxy Manager): proxy HTTPS to `127.0.0.1:3773`, `127.0.0.1:3774` and `127.0.0.1:3772` with WebSocket support, and use the proxy's URL as `--base-url` (and as `T3CODEBOX_PUBLIC_URL`, for the dashboard's pairing links).
 - **LAN without TLS**: publish on all interfaces by editing the `ports:` lines in `compose.yaml` (`"3773:3773"`). The browser also serves self-signed HTTPS on its port 3001 (`"3775:3001"`); use that one from phones, because the desktop's session cookie needs HTTPS and iOS Safari needs the cookie.
 
 ## The dashboard
@@ -96,6 +97,7 @@ A status page for the box where settings can also be changed, made for phones as
 - **Providers**: whether Claude Code, Codex, Cursor, Grok Build, OpenCode and GitHub are signed in, how and as whom. **Sign in** runs the provider's headless sign-in and shows the link to open (with a QR code, for a phone) and the code to enter there; for Claude Code, paste back the code its page shows. OpenCode signs in through a menu per provider, so its card shows the command instead. **Sign out** removes a stored login with the provider's own command (for OpenCode, per provider; for GitHub, `git push` stops working too). A login from `.env` is signed out by removing the variable there. The GitHub card sets the commit author (`git config --global user.name` and `user.email`).
 - **T3 access**: paired devices with a countdown to their expiry, and unused pairing links, each with a Revoke button. **Pair a device** creates a link for T3's address and a validity you choose, and shows it as a QR code: scan it with the phone, or open the dashboard on the phone and tap the link.
 - **Skills**: the skills installed for each agent, the ones synced from claude.ai and Codex's built-in ones. Add skills from a GitHub repository (`owner/repo`, for example `mattpocock/skills` or `anthropics/skills`): **Show skills** lists what it has; tick the ones you want and **Install selected** puts them into every agent's user skills with the [`skills`](https://www.npmjs.com/package/skills) CLI, which is in the image. Or type one or more names and **Install**. **Update** installs the latest version of a skill from its repository, **Update all** of every skill installed that way, and **Remove** takes one out again. `skills` asks skills.sh for the security checks it shows and reports installs to it; add `DO_NOT_TRACK=1` to the `t3codebox` service's `environment:` to turn both off.
+- **Hub**: whether the box is connected to a hub, since when and when its T3 access is renewed next, or what went wrong; **Retry** (or **Renew now**) and **Leave**. Skills from a shared `/skills` folder are listed under Skills as read-only.
 - **Toolchains**: the languages and tools agents installed with mise, each version with its size, the projects that pin it and whether it's unused, and the volume's total. **Remove unused** runs `mise prune`.
 - **Dashboard devices**: every browser signed in to the dashboard, each with a Sign out button.
 
@@ -106,6 +108,14 @@ Whatever needs attention is red and also listed at the top, such as T3 not answe
 The generated password is kept in the home volume. Read it with `docker exec t3codebox cat /home/t3codebox/.t3codebox/dashboard-password`, or ask an agent in T3 for it. Set your own with `DASHBOARD_PASSWORD`; changing the password signs every device out. A device stays signed in for a year after it last opened the dashboard, across restarts and updates.
 
 The dashboard pairs devices and installs skills, so its password is worth as much as a shell in the container: keep it like the other secrets. It runs next to T3 in the same container and never takes T3 down with it. `DASHBOARD=off` turns it off.
+
+## Hubs and shared skills
+
+T3CodeBox runs on its own. When a hub manages it, the box connects itself: set `T3CODEBOX_HUB_URL` and `T3CODEBOX_HUB_CODE` from the hub in `.env`, and once T3 is up the box gives the hub a T3 token that can work threads (but not open T3's terminal or change who has access), adds the hub's MCP server for every agent, and keeps the token renewed. Starting turns means running agents, so trust a hub like you trust the agents. Nobody has to run a command inside the container. The dashboard's Hub card shows how it stands; removing the variable (or **Leave**) takes it all back. Without the variable nothing changes.
+
+Skills for every agent, with or without a hub: mount a folder of them read-only at `/skills` (the commented line in `compose.yaml`), and T3CodeBox links each one in for all five agents and keeps the links up to date.
+
+The details, running behind a hub's proxy, and the protocol for writing a hub: [docs/hub.md](docs/hub.md).
 
 ## Sign in to the agents
 
@@ -185,6 +195,11 @@ All in `.env` (see [`.env.example`](.env.example)):
 | `DASHBOARD_PORT` | `3772` | Host port of the dashboard (on 127.0.0.1) |
 | `DASHBOARD_PASSWORD` | generated | Dashboard password |
 | `DASHBOARD` | on | `off`: no dashboard |
+| `DASHBOARD_PROXY_SECRET` | unset | Behind a proxy that signs users in: the secret it sends, 32 characters or more ([docs/hub.md](docs/hub.md#behind-a-hubs-proxy)) |
+| `T3CODEBOX_PUBLIC_URL` | unset | T3's address as devices reach it, for the dashboard's pairing links |
+| `T3CODEBOX_HUB_URL` | unset | A hub's enrolment address: connects the box to it ([docs/hub.md](docs/hub.md)) |
+| `T3CODEBOX_HUB_CODE` | unset | The hub's one-time enrolment code |
+| `T3CODEBOX_HUB_CODE_FILE` | unset | Or a file in the container with the code, such as a Docker secret |
 | `T3CODE_TELEMETRY_ENABLED` | T3's default | `false` turns off T3's anonymous telemetry |
 | `MISE_IDIOMATIC_VERSION_FILE_ENABLE_TOOLS` | unset | `node,python,ruby`: mise also follows `.nvmrc`, `.python-version` and `.ruby-version` |
 
@@ -194,7 +209,7 @@ Memory limit: uncomment `mem_limit` in `compose.yaml`. T3's own `T3CODE_*` varia
 
 | Volume | Path | Holds |
 | --- | --- | --- |
-| `t3codebox-home` | `/home/t3codebox` | T3's state (`~/.t3`: threads, settings, paired devices), every provider login, `gh`, git config, SSH keys, the dashboard password and signed-in devices (`~/.t3codebox`) |
+| `t3codebox-home` | `/home/t3codebox` | T3's state (`~/.t3`: threads, settings, paired devices), every provider login, `gh`, git config, SSH keys, the dashboard password and signed-in devices, a hub's enrolment (`~/.t3codebox`) |
 | `t3codebox-workspace` | `/workspace` | Your repositories. The path is fixed: T3 stores projects by absolute path |
 | `t3codebox-toolchains` | `/toolchains` | The languages and tools agents installed with mise. Safe to delete: they install again when needed |
 | `t3codebox-browser` | `/config` in the browser | Chromium profile, cookies, the browser password |
@@ -247,9 +262,19 @@ How it's built and why: [docs/](docs/README.md).
 
 `make build` produces `t3codebox:test` and `t3codebox-browser:test`; set `T3CODEBOX_IMAGE=t3codebox T3CODEBOX_TAG=test T3CODEBOX_BROWSER_IMAGE=t3codebox-browser` to run them with `compose.yaml`. The scripts in `ci/` need bash, Docker with buildx and compose; `DOCKER="sudo -E docker"` if your Docker needs sudo. CI runs the same `make` targets.
 
+### Updating the base image
+
+The `Dockerfile` pins its base, `debian:trixie-slim`, by digest, so a rebuild never picks up a moved base by surprise. The comment above `FROM` gives the date it was resolved. To move to the current base, resolve the digest of the multi-arch index (not of one architecture):
+
+```sh
+docker buildx imagetools inspect debian:trixie-slim --format '{{.Manifest.Digest}}'
+```
+
+Put it after `debian:trixie-slim@`, update the date in the comment, run `make check build test`, and commit. Bump it on purpose, for example when a scan reports a fixed finding in the base. The build still runs `apt-get upgrade`, so Debian's security fixes reach a rebuild either way; the pin only fixes which base they are applied to. (The browser image's `lscr.io/linuxserver/chromium:latest` is a separate base and is not pinned here.)
+
 ## How releases are made
 
-- Every 15 minutes CI checks for a new stable T3 Code release. A new one is built with the newest version of every other component, on native amd64 and arm64 runners, and tested on each: non-root user, health endpoint, T3 version, every provider CLI, pairing link, state across a restart, the dashboard's sign-in, status and settings, toolchains with mise, no sudo and no Docker socket, the browser and an agent-side connection to it. Only then are the tags moved.
+- Every 15 minutes CI checks for a new stable T3 Code release. A new one is built with the newest version of every other component, on native amd64 and arm64 runners, and tested on each: non-root user, health endpoint, T3 version, every provider CLI, pairing link, state across a restart, the dashboard's sign-in, status and settings, toolchains with mise, no sudo and no Docker socket, the browser and an agent-side connection to it, hub mode against a test hub and shared skills. Only then are the tags moved.
 - A daily Trivy scan checks the published images. A critical finding with a fix triggers a rebuild; a high one opens an issue.
 - Every change merged to `main` goes through the same build and tests and is published as `edge` only; `latest` and the version tags wait for a release.
 - T3 Code preview and nightly builds are not followed.
